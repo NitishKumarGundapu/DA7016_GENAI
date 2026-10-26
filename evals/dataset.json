@@ -1,0 +1,10 @@
+[
+  {
+    "name": "typed_demo_student",
+    "inputs": {
+      "spec_file": "examples/spec.json",
+      "answer_files": ["examples/student_answer.txt"]
+    },
+    "outputs": {"human_marks": {"1": 5, "2": 2.5, "3": 0}}
+  }
+]

@@ -1,0 +1,3 @@
+Q1. Overfitting is when the model learns the training data too well, including the noise, so it does badly on new data. The training error is very low but the test error is high. To reduce it we can use more data or apply dropout.
+
+Q2. theta = theta - alpha * gradient of J. The learning rate alpha controls the step size. If it is too small training is slow.
