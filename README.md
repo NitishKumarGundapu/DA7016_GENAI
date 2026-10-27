@@ -47,7 +47,7 @@ ollama pull qwen2.5:14b && ollama pull qwen2.5vl:7b
 
 ## Run
 ```bash
-python app.py                                   # Gradio UI
+streamlit run app.py                            # Streamlit UI
 
 # CLI, no scans needed (typed .txt answer + JSON spec):
 python -m auto_assessment.cli --spec examples/spec.json --answers examples/student_answer.txt
