@@ -1,68 +1,127 @@
 # Auto-Assessment: agentic grading of handwritten answer sheets
 
-LangGraph (orchestration) + LangChain (models, structured output, fallbacks) + LangSmith (tracing and evals).
+LangGraph (orchestration) + LangChain (grading models and structured output) + LangSmith (tracing and evals).
 
-**Input:** question paper, handwritten answer-sheet scans, rubric, model answer per question
+**Required input:** question paper (with maximum marks), model answers per question, student answer sheets
+**Optional input:** rubric with explicit criterion marks
 **Output:** marks per question + rubric-defensible, student-specific feedback (Markdown report + JSON)
 
 ## Architecture
 
 ```
-            +--> parse_spec --+
-   START ---+                 +--> segment --Send x N--> grade_question --> aggregate --> summarize --> END
-            +--> transcribe --+                          |
-                                                         v   (sub-graph, one per question)
-                                           grade -> verify -> [issues? retry with critique] -> finalize
+START -> ingest -> parse_spec -> clean_align -> grade_question -> aggregate -> report -> END
+                                               |
+                                               v (sequential, in question-paper order)
+                              grade -> verify -> [issues? retry with critique] -> finalize
 ```
 
 | Node | What it does |
 |---|---|
-| `parse_spec` | LLM turns the question paper, rubric and model answers into a typed `ExamSpec`. Criteria marks are rescaled in code if they do not sum to the question total. Skipped if you pass a JSON spec. |
-| `transcribe` | Vision model reads each page with a "transcribe, do not correct" prompt. Pages run in parallel. |
-| `segment` | Maps the transcript to question ids (answers can span pages). Flags segments that do not match the transcript. |
-| `grade_question` | Fans out with `Send`, one sub-graph per question. |
+| `ingest` | Reads UTF-8 text directly. Sends each complete PDF as a base64 file to OpenRouter's `file-parser` plugin with `mistral-ocr`; sends original images directly to the OpenRouter vision model. No local PDF parsing, page rendering, resizing, or image conversion. Preserves upload order and requests original page order within each document. |
+| `parse_spec` | Aligns question paper, optional rubric, and model answers into an internal `ExamSpec`. Supplied rubrics require explicit positive criterion allocations summing to each question total; missing or inconsistent allocations stop assessment before grading. Without a rubric, code creates one whole-question criterion using the model answer and the question's printed maximum marks, allowing proportional partial credit. Missing/invalid question totals still stop grading. |
+| `clean_align` | Builds `items`, a list of `{question_id, question, answer, model_answer, rubric, max_marks}` dictionaries. Student answers remain verbatim. Missing/duplicate/unknown mappings and ungrounded text stop assessment, rather than silently becoming zero marks. |
+| `grade_question` | Evaluates questions one by one in paper order, using each aligned dictionary as input. |
 | sub-graph | `grade` (per-criterion marks plus verbatim evidence quote) -> `verify` (code checks, then LLM critic) -> retry up to `MAX_GRADE_RETRIES` with the critique -> `finalize`. Unattempted questions skip the LLM. |
 | `aggregate` | Totals are computed in code, never by the LLM. |
-| `summarize` | Overall feedback and study priorities, then the Markdown report. |
+| `report` | Receives complete evaluations and review flags. Writes question-specific remarks, overall feedback and study priorities. Code renders awarded/maximum/withheld criterion marks, evidence and justifications; the LLM never computes totals. |
 
-**Why it is defensible without a human reviewer**
+`auto_assessment/graph.py` assembles the top-level and per-question LangGraph workflows; `nodes.py` holds their callable node implementations, and `models.py` defines the Pydantic assessment models and dictionary-based graph state schemas. `schemas.py` and `state.py` retain compatibility imports.
+
+**Grading safeguards (not a replacement for human review)**
 - Every awarded criterion must quote the student verbatim, and the quote is fuzzy-matched against the answer in code.
 - Marks are clamped to rubric bounds and summed in code.
 - An LLM critic checks fairness (no credit for absent content, no penalty for valid alternatives) and feedback specificity.
 - Questions that never pass verification are flagged in the report, not silently accepted.
+- Uncertain handwriting is flagged for human review. Unattempted questions skip grading calls but remain in the report with zero marks and count towards the paper total.
+- Extracted text and quotes retain their language/script. Feedback follows each question's language; report headings and overall remarks follow the predominant paper language. Accuracy depends on the selected text and vision models.
+- Cleaning, evaluation, and report prompts live in [prompts.py](auto_assessment/prompts.py).
 
-## `HybridLLM` (auto_assessment/llm.py)
-One class wrapping OpenAI and Ollama. Every node calls `llm.structured(Schema, vision=...)`.
-`LLM_PROVIDER` = `openai` | `ollama` | `openai_then_ollama` | `ollama_then_openai`
-(fallback uses LangChain `.with_fallbacks`; OpenAI is skipped automatically if no API key is set).
+## LLM clients (auto_assessment/llm_client.py)
+Separate `OllamaClient` and `OpenRouterClient` classes share the `LLMClient` interface for reference alignment, grading, verification, and reports:
+`llm.structured(Schema, temperature=...)`.
+`create_llm(settings)` selects the client using `LLM_PROVIDER`: `ollama` (default) or `openrouter`.
+Clients retain LangChain structured-output validation and tracing. `invoke(prompt)` returns a LangChain message, including provider-supplied usage metadata; per-call temperatures do not mutate the shared model.
+Existing `HybridLLM(settings)` calls remain supported through a compatibility alias in `llm.py`.
+PDF/image extraction always uses OpenRouter, regardless of the grading provider. There is no local OCR fallback.
+
+## Document extraction
+- Set `OPENROUTER_API_KEY` for any PDF/image upload. Those files are sent to OpenRouter and its providers; OCR incurs API charges, including when grading uses Ollama.
+- `OPENROUTER_VISION_MODEL` defaults to `mistralai/mistral-small-3.1-24b-instruct` and is separate from the grading text model. The UI exposes it as **OpenRouter OCR / vision model**.
+- PDFs: send the entire original file using `type: file`, with `plugins: [{"id": "file-parser", "pdf": {"engine": "mistral-ocr"}}]`.
+- Images: send original PNG/JPEG/WebP/GIF bytes using `image_url`. No PDF plugin or local image processing. BMP/TIFF uploads are no longer supported; convert them to a supported format before uploading.
+- `.txt` / `.md` and pasted model answers need no OCR calls.
+- Empty documents, HTTP/API errors, malformed replies, and incomplete OCR output stop assessment explicitly.
+- Transcript boundaries use `=== DOCUMENT n ===`. State field `document_count` counts student files, not PDF pages; the pipeline no longer computes page counts locally.
+- Uncertain `[illegible]` / `[?]` markers remain review warnings. Transcription accuracy still requires human review.
 
 ## Setup
 ```bash
 python -m venv .venv && source .venv/bin/activate
 pip install -r requirements.txt
-cp .env.example .env        # add OPENAI_API_KEY, LANGSMITH_API_KEY
+# Set LLM_PROVIDER=ollama or LLM_PROVIDER=openrouter in .env.
+# Set OPENROUTER_API_KEY for PDF/image OCR and for OpenRouter grading.
+# OPENROUTER_VISION_MODEL=mistralai/mistral-small-3.1-24b-instruct
+# Optionally add LANGSMITH_TRACING=true and LANGSMITH_API_KEY for tracing.
 # for local models:
-ollama pull qwen2.5:14b && ollama pull qwen2.5vl:7b
+ollama pull qwen2.5:14b
 ```
+
+## Check OpenRouter access and pricing
+Set `OPENROUTER_API_KEY` in `.env`, then list models available to that key with
+input/output prices per one million tokens:
+```bash
+python openrouter_models.py
+python openrouter_models.py --search llama
+python openrouter_models.py --model openai/gpt-4o --prompt "Say hello in one sentence."
+```
+The model list comes from OpenRouter's account-specific models endpoint. A model being
+listed does not necessarily mean requests will succeed if the account has no remaining
+credits or the model has other provider-specific requirements.
 
 ## Run
 ```bash
-streamlit run app.py                            # Streamlit UI
+python app.py                                  # Web UI at http://127.0.0.1:8000
 
-# CLI, no scans needed (typed .txt answer + JSON spec):
-python -m auto_assessment.cli --spec examples/spec.json --answers examples/student_answer.txt
+# CLI, no scans or rubric needed:
+python -m auto_assessment.cli --question-paper examples/question_paper.txt \
+    --model-answers examples/model_answers.txt --answers examples/student_answer.txt
+
+# Optionally add explicit criterion allocations:
+python -m auto_assessment.cli --question-paper examples/question_paper.txt \
+    --model-answers examples/model_answers.txt --rubric examples/rubric.txt \
+    --answers examples/student_answer.txt
 
 # CLI with real scans:
 python -m auto_assessment.cli --question-paper qp.pdf --rubric rubric.pdf \
     --model-answers model.pdf --answers page1.jpg page2.jpg page3.jpg
+
+# Inline correct answers instead of a model-answer file:
+python -m auto_assessment.cli --question-paper qp.pdf --rubric rubric.pdf \
+    --model-answers-text "1. Correct answer ... 2. Correct answer ..." --answers student.pdf
 ```
+
+CLI saves `report.md`, `result.json`, aligned `questions.json`, and `transcript.txt` to `out/`.
+UI accepts uploaded model answers or pasted correct answers and downloads JSON and Markdown.
+The web UI uses Flask with plain HTML, CSS, and vanilla JavaScript; no Node.js, frontend build,
+external fonts, or animation libraries are needed. It includes live streamed progress,
+reorderable student pages, model settings, criterion feedback, review warnings, and transcript access.
+Animations respect reduced-motion preferences. Uploads are limited to 50 MB per request,
+stored temporarily, and removed after processing. Results stay in the browser until a reload;
+download reports before leaving. Closing the page interrupts the progress connection, not
+necessarily an in-flight model request. The server binds to loopback only; this unauthenticated
+local tool is not intended for public hosting. Add authentication and a production server before
+exposing it to a network.
+Question paper, model answers (upload or pasted text), and at least one student sheet are mandatory.
+Rubric is optional; when supplied, every criterion must have explicit marks.
+Without a rubric, the system grades each question as a whole; it does not invent detailed marking allocations.
+Structured JSON spec input is no longer supported.
 
 ## LangSmith
 - Set `LANGSMITH_TRACING=true`, `LANGSMITH_API_KEY`, `LANGSMITH_PROJECT`. Every run is traced end to end: node, per-question sub-graph, retries, LLM calls, with tags and metadata (provider, models).
 - Evals: `python evals/run_eval.py` creates a dataset from `evals/dataset.json` and scores marks-in-bounds, total consistency, evidence grounding, verification rate, agreement with human marks, and LLM-judged feedback quality.
-- Tests (no API needed): `pytest tests/`
+- Offline pipeline checks (no API needed): `python -m pytest tests/test_pipeline.py`
 
 ## Notes
-- Handwriting accuracy is the main risk. GPT-4o-class vision models are far better than small local VLMs; use `ollama` mode mainly for privacy or offline demos.
-- Question paper, rubric and model answers must be text PDFs, `.txt`, `.md` or JSON. Scanned versions of those need a transcription step first.
+- Handwriting accuracy is the main risk. Ollama grading is fully local only with text inputs; PDF/image OCR always uses OpenRouter.
+- All document roles accept text/scanned PDFs, `.txt`, `.md`, or PNG/JPEG/WebP/GIF images. Reference correct answers may also be pasted as text.
 - Ollama context defaults are small, so `OLLAMA_NUM_CTX=8192` is set.

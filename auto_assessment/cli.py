@@ -9,12 +9,15 @@ from .pipeline import run_assessment, tracing_enabled
 
 def main() -> None:
     ap = argparse.ArgumentParser(description="Auto-Assessment (LangGraph)")
-    ap.add_argument("--question-paper")
-    ap.add_argument("--rubric")
-    ap.add_argument("--model-answers")
-    ap.add_argument("--spec", help="Optional structured JSON spec (replaces the three documents)")
+    ap.add_argument("--question-paper", required=True)
+    ap.add_argument("--rubric", help="Optional rubric document with explicit criterion marks")
+    model_group = ap.add_mutually_exclusive_group(required=True)
+    model_group.add_argument("--model-answers", help="Model-answer document, PDF, or scan")
+    model_group.add_argument("--model-answers-text", help="Inline correct answers, with question labels")
     ap.add_argument("--answers", nargs="+", required=True, help="Scans (png/jpg/pdf) or .txt")
-    ap.add_argument("--provider", choices=["openai", "ollama", "openai_then_ollama", "ollama_then_openai"])
+    ap.add_argument("--provider", choices=[
+        "openrouter", "ollama",
+    ])
     ap.add_argument("--no-critic", action="store_true")
     ap.add_argument("--out", default="out")
     a = ap.parse_args()
@@ -26,11 +29,13 @@ def main() -> None:
         s.use_critic = False
 
     state = run_assessment(question_paper=a.question_paper, rubric=a.rubric, model_answers=a.model_answers,
-                           spec_file=a.spec, answer_files=a.answers, settings=s)
+                           model_answers_text=a.model_answers_text,
+                           answer_files=a.answers, settings=s)
     out = Path(a.out)
     out.mkdir(parents=True, exist_ok=True)
     (out / "report.md").write_text(state["report_md"], encoding="utf-8")
-    (out / "result.json").write_text(json.dumps(state["result"], indent=2), encoding="utf-8")
+    (out / "result.json").write_text(json.dumps(state["result"], indent=2, ensure_ascii=False), encoding="utf-8")
+    (out / "questions.json").write_text(json.dumps(state["items"], indent=2, ensure_ascii=False), encoding="utf-8")
     (out / "transcript.txt").write_text(state["transcript"], encoding="utf-8")
 
     r = state["result"]

@@ -1,0 +1,5 @@
+1. Overfitting is when a model fits noise in the training data and generalises poorly to unseen data (high variance: low train error, high test error). Remedies: more data, regularisation (L1/L2, dropout), early stopping, simpler model, cross-validation.
+
+2. theta := theta - alpha * grad J(theta). A small learning rate converges slowly; too large a rate overshoots or diverges.
+
+3. Softmax converts a vector of logits into a probability distribution (non-negative, sums to 1), typically for multi-class classification outputs.

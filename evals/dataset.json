@@ -2,7 +2,9 @@
   {
     "name": "typed_demo_student",
     "inputs": {
-      "spec_file": "examples/spec.json",
+      "question_paper": "examples/question_paper.txt",
+      "model_answers": "examples/model_answers.txt",
+      "rubric": "examples/rubric.txt",
       "answer_files": ["examples/student_answer.txt"]
     },
     "outputs": {"human_marks": {"1": 5, "2": 2.5, "3": 0}}

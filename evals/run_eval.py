@@ -6,7 +6,9 @@
 dataset.json format:
 [
   {"name": "student_a",
-   "inputs":  {"spec_file": "examples/spec.json", "answer_files": ["examples/student_a.txt"]},
+   "inputs":  {"question_paper": "examples/question_paper.txt",
+               "model_answers": "examples/model_answers.txt",
+               "rubric": "examples/rubric.txt", "answer_files": ["examples/student_answer.txt"]},
    "outputs": {"human_marks": {"1": 4, "2": 3}}}        # human_marks optional
 ]
 
@@ -29,14 +31,15 @@ from langsmith import Client, evaluate  # noqa: E402
 from pydantic import BaseModel  # noqa: E402
 
 from auto_assessment.config import Settings  # noqa: E402
-from auto_assessment.llm import HybridLLM  # noqa: E402
+from auto_assessment.llm_client import create_llm  # noqa: E402
 from auto_assessment.pipeline import run_assessment  # noqa: E402
 from auto_assessment.verify import evidence_found  # noqa: E402
 
 
 def target(inputs: dict) -> dict:
-    st = run_assessment(spec_file=inputs.get("spec_file"), question_paper=inputs.get("question_paper"),
+    st = run_assessment(question_paper=inputs.get("question_paper"),
                         rubric=inputs.get("rubric"), model_answers=inputs.get("model_answers"),
+                        model_answers_text=inputs.get("model_answers_text"),
                         answer_files=inputs["answer_files"], tags=["eval"])
     return {"result": st["result"]}
 
@@ -82,7 +85,7 @@ class _Judge(BaseModel):
 
 
 def feedback_quality(outputs: dict) -> dict:
-    judge = HybridLLM(Settings.from_env()).structured(_Judge, temperature=0)
+    judge = create_llm(Settings.from_env()).structured(_Judge, temperature=0)
     scores = []
     for g in outputs["result"]["grades"]:
         if not g["attempted"]:

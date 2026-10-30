@@ -1,136 +1,140 @@
-"""Streamlit UI: run with ``streamlit run app.py``."""
+"""Local web UI: run with ``python app.py``."""
 import json
+import logging
 import tempfile
 from pathlib import Path
+from urllib.parse import urlsplit
 
-import pandas as pd
-import streamlit as st
+from flask import Flask, Response, jsonify, render_template, request
+from werkzeug.exceptions import HTTPException
 
 from auto_assessment.config import Settings
+from auto_assessment.ingest import IMAGE_MIME_TYPES, TEXT_EXT
 from auto_assessment.pipeline import stream_assessment, tracing_enabled
 
-NODE_LABELS = {
-    "parse_spec": "Parsed question paper, rubric, and model answers",
-    "transcribe": "Transcribed handwritten pages",
-    "segment": "Mapped answers to questions",
-    "grade_question": "Graded and verified a question",
-    "aggregate": "Totalled marks",
-    "summarize": "Wrote feedback and report",
-}
-PROVIDERS = ["openai_then_ollama", "ollama_then_openai", "openai", "ollama"]
+app = Flask(__name__)
+app.config["MAX_CONTENT_LENGTH"] = 50 * 1024 * 1024
+logger = logging.getLogger(__name__)
+SUPPORTED = {".pdf", *IMAGE_MIME_TYPES, *TEXT_EXT}
 
 
-def _save_upload(upload, directory: Path) -> str | None:
-    if upload is None:
-        return None
-    path = directory / Path(upload.name).name
-    path.write_bytes(upload.getvalue())
-    return str(path)
+@app.after_request
+def protect_response(response):
+    response.headers["Cache-Control"] = "no-store"
+    response.headers["X-Content-Type-Options"] = "nosniff"
+    response.headers["Content-Security-Policy"] = (
+        "default-src 'self'; script-src 'self'; style-src 'self'; "
+        "img-src 'self' data:; connect-src 'self'; object-src 'none'; "
+        "base-uri 'none'; frame-ancestors 'none'; form-action 'self'"
+    )
+    return response
 
 
-def main() -> None:
-    st.set_page_config(page_title="Auto-Assessment", page_icon="📝", layout="wide")
-    st.title("Auto-Assessment")
-    st.write("Grade a handwritten answer sheet against a rubric, with detailed feedback.")
+@app.errorhandler(HTTPException)
+def http_error(error):
+    return jsonify(error=error.description), error.code
 
-    defaults = Settings.from_env()
-    left, right = st.columns(2)
-    with left:
-        question_paper = st.file_uploader("Question paper (.pdf/.txt/.md)", type=["pdf", "txt", "md"], key="qp")
-        rubric = st.file_uploader("Rubric (.pdf/.txt/.md)", type=["pdf", "txt", "md"], key="rubric")
-        model_answers = st.file_uploader("Model answers (.pdf/.txt/.md)", type=["pdf", "txt", "md"], key="model_answers")
-        spec = st.file_uploader("Optional structured spec (.json); replaces the three files above", type=["json"], key="spec")
-        sheets = st.file_uploader("Student answer sheet scans (.png/.jpg/.pdf)", type=["png", "jpg", "jpeg", "pdf"], accept_multiple_files=True, key="sheets")
-        with st.expander("Model & pipeline settings"):
-            provider = st.selectbox("LLM provider mode", PROVIDERS, index=PROVIDERS.index(defaults.provider) if defaults.provider in PROVIDERS else 0)
-            openai_model = st.text_input("OpenAI text model", defaults.openai_model)
-            openai_vision = st.text_input("OpenAI vision model", defaults.openai_vision_model)
-            ollama_model = st.text_input("Ollama text model", defaults.ollama_model)
-            ollama_vision = st.text_input("Ollama vision model", defaults.ollama_vision_model)
-            ollama_url = st.text_input("Ollama base URL", defaults.ollama_base_url)
-            use_critic = st.checkbox("LLM critic verification", defaults.use_critic)
-            max_retries = st.slider("Max re-grade retries", 0, 4, defaults.max_grade_retries)
-        run = st.button("Grade", type="primary", use_container_width=True)
 
-    with right:
-        status_area = st.empty()
-        total_area = st.empty()
-        results_area = st.empty()
-        download_area = st.empty()
-        report_area = st.empty()
-        transcript_area = st.empty()
+@app.get("/")
+def index():
+    return render_template("index.html", settings=Settings.from_env())
 
-    if not run:
-        return
-    if not sheets:
-        st.error("Upload at least one answer-sheet file.")
-        return
-    if not spec and not all([question_paper, rubric, model_answers]):
-        st.error("Upload a JSON spec, or provide the question paper, rubric, and model answers.")
-        return
 
+def _settings(form):
     settings = Settings.from_env()
-    settings.provider = provider
-    settings.openai_model, settings.openai_vision_model = openai_model, openai_vision
-    settings.ollama_model, settings.ollama_vision_model = ollama_model, ollama_vision
-    settings.ollama_base_url = ollama_url
-    settings.use_critic, settings.max_grade_retries = use_critic, max_retries
+    settings.provider = form.get("provider", settings.provider)
+    if settings.provider not in {"ollama", "openrouter"}:
+        raise ValueError("Choose Ollama or OpenRouter.")
+    for field in ("openrouter_model", "openrouter_vision_model", "ollama_model", "ollama_base_url"):
+        value = form.get(field, getattr(settings, field)).strip()
+        if not value:
+            raise ValueError(f"{field.replace('_', ' ').capitalize()} must not be blank.")
+        setattr(settings, field, value)
+    url = urlsplit(settings.ollama_base_url)
+    if url.scheme not in {"http", "https"} or not url.hostname or url.username or url.password:
+        raise ValueError("Ollama URL must be an HTTP(S) URL without credentials.")
+    settings.max_grade_retries = int(form.get("max_grade_retries", settings.max_grade_retries))
+    if not 0 <= settings.max_grade_retries <= 4:
+        raise ValueError("Re-grade retries must be between 0 and 4.")
+    settings.use_critic = form.get("use_critic") == "on"
+    return settings
 
-    logs: list[str] = ["Starting…"]
-    status_area.markdown("\n".join(f"- {line}" for line in logs))
+
+@app.post("/api/assess")
+def assess():
+    origin = request.headers.get("Origin")
+    if (origin and origin != request.host_url.rstrip("/")) or request.headers.get(
+        "Sec-Fetch-Site"
+    ) == "cross-site":
+        return jsonify(error="Cross-origin assessment requests are not allowed."), 403
     try:
-        with tempfile.TemporaryDirectory(prefix="auto-assessment-") as temp_dir:
-            directory = Path(temp_dir)
-            qp_path = _save_upload(question_paper, directory)
-            rubric_path = _save_upload(rubric, directory)
-            answers_path = _save_upload(model_answers, directory)
-            spec_path = _save_upload(spec, directory)
-            sheet_paths = [_save_upload(item, directory) for item in sheets]
+        settings = _settings(request.form)
+        uploads = {}
+        for role in ("question_paper", "rubric", "model_answers", "answer_files"):
+            uploads[role] = [file for file in request.files.getlist(role) if file.filename]
+            if role != "answer_files" and len(uploads[role]) > 1:
+                raise ValueError(f"Provide only one {role.replace('_', ' ')} file.")
+            for file in uploads[role]:
+                if Path(file.filename).suffix.lower() not in SUPPORTED:
+                    raise ValueError("Unsupported file. Use PDF, TXT, MD, PNG, JPEG, WebP, or GIF.")
+        inline = request.form.get("model_answers_text", "").strip()
+        if not uploads["question_paper"] or not uploads["answer_files"]:
+            raise ValueError("Upload a question paper and at least one student answer sheet.")
+        if bool(uploads["model_answers"]) == bool(inline):
+            raise ValueError("Provide either a model-answer file or pasted model answers, not both.")
+    except ValueError as exc:
+        return jsonify(error=str(exc)), 400
 
+    temp_dir = tempfile.TemporaryDirectory(prefix="auto-assessment-")
+    try:
+        inputs = {}
+        for role, files in uploads.items():
+            paths = []
+            for index, file in enumerate(files):
+                path = Path(temp_dir.name) / f"{role}-{index}{Path(file.filename).suffix.lower()}"
+                file.save(path)
+                if not path.stat().st_size:
+                    raise ValueError(f"{role.replace('_', ' ').capitalize()} file is empty.")
+                paths.append(str(path))
+            inputs[role] = paths if role == "answer_files" else next(iter(paths), None)
+    except ValueError as exc:
+        temp_dir.cleanup()
+        return jsonify(error=str(exc)), 400
+    except OSError:
+        temp_dir.cleanup()
+        logger.exception("Could not save uploaded documents")
+        return jsonify(error="Could not save uploaded documents. Check disk space and permissions."), 500
+
+    def generate():
+        try:
             for event in stream_assessment(
-                question_paper=qp_path,
-                rubric=rubric_path,
-                model_answers=answers_path,
-                spec_file=spec_path,
-                answer_files=sheet_paths,
-                settings=settings,
-                tags=["streamlit"],
+                **inputs, model_answers_text=inline or None, settings=settings, tags=["web"],
             ):
                 if event["type"] == "progress":
-                    logs.append(NODE_LABELS.get(event["node"], event["node"]))
-                    status_area.markdown("\n".join(f"- {line}" for line in logs))
-                    continue
+                    payload = {"type": "progress", "node": event["node"]}
+                else:
+                    state = event["state"]
+                    payload = {
+                        "type": "final", "result": state["result"],
+                        "report_md": state["report_md"], "transcript": state["transcript"],
+                        "items": state["items"], "run_id": event["run_id"],
+                        "tracing": tracing_enabled(),
+                    }
+                yield json.dumps(payload, ensure_ascii=False) + "\n"
+        except Exception as exc:
+            logger.exception("Assessment failed")
+            yield json.dumps({"type": "error", "error": f"{type(exc).__name__}: {exc}"}) + "\n"
+        finally:
+            temp_dir.cleanup()
 
-                state = event["state"]
-                result = state["result"]
-                rows = [{
-                    "Question": grade["question_id"],
-                    "Marks": grade["marks_awarded"],
-                    "Max": grade["max_marks"],
-                    "Attempted": "Yes" if grade["attempted"] else "No",
-                    "Verified": "Yes" if grade["verified"] else "No",
-                } for grade in result["grades"]]
-                logs.append("Done. " + (f"LangSmith run id `{event['run_id']}`" if tracing_enabled() else "LangSmith tracing is off (set LANGSMITH_TRACING / LANGSMITH_API_KEY)."))
-                status_area.markdown("\n".join(f"- {line}" for line in logs))
-                total_area.markdown(f"## Total: {result['total']} / {result['max_total']} ({result['percentage']}%)")
-                results_area.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
-                download_area.download_button(
-                    "Download result.json",
-                    data=json.dumps(result, indent=2).encode("utf-8"),
-                    file_name="result.json",
-                    mime="application/json",
-                )
-                with report_area.container():
-                    st.subheader("Feedback report")
-                    st.markdown(state["report_md"])
-                with transcript_area.container():
-                    st.subheader("Transcript")
-                    st.text_area("Transcribed answer sheet", state["transcript"], height=300, disabled=True, label_visibility="collapsed")
-    except Exception as exc:
-        logs.append(f"Error: {type(exc).__name__}: {exc}")
-        status_area.markdown("\n".join(f"- {line}" for line in logs))
-        st.error(f"{type(exc).__name__}: {exc}")
+    # ponytail: request-scoped streaming, no job queue; use a worker queue for durable jobs.
+    response = Response(
+        generate(), mimetype="application/x-ndjson",
+        headers={"X-Accel-Buffering": "no"},
+    )
+    response.call_on_close(temp_dir.cleanup)
+    return response
 
 
 if __name__ == "__main__":
-    main()
+    app.run(host="127.0.0.1", port=8000, debug=False)

@@ -1,0 +1,5 @@
+Intro to ML - Quiz 1
+
+1. Explain what overfitting is and give two ways to reduce it. (5 marks)
+2. Write the gradient descent update rule and explain the role of the learning rate. (3 marks)
+3. What is the purpose of the softmax function? (2 marks)

@@ -1,0 +1,12 @@
+Question 1 (5 marks):
+- Defines overfitting (2 marks): Model fits training noise / poor generalisation to unseen data.
+- Mentions train/test gap (1 mark): Low training error but high test/validation error.
+- Two remedies (2 marks): Any two valid remedies (regularisation, more data, early stopping, dropout...).
+
+Question 2 (3 marks):
+- Update rule (1.5 marks): Correct update with gradient and step size.
+- Learning rate effect (1.5 marks): Explains too small = slow, too large = overshoot/diverge.
+
+Question 3 (2 marks):
+- Probability distribution (1 mark): Outputs sum to 1 / interpretable as probabilities.
+- Use case (1 mark): Multi-class classification / final layer over logits.

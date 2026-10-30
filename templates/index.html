@@ -1,0 +1,66 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#153f38">
+  <title>Auto Assessment / Studio</title>
+  <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+  <script defer src="{{ url_for('static', filename='app.js') }}"></script>
+</head>
+<body>
+  <a class="skip-link" href="#workspace">Skip to workspace</a>
+  <aside class="sidebar">
+    <a class="brand" href="/" aria-label="Auto Assessment home"><span class="brand-icon">a<span>✓</span></span><span>auto<span class="brand-light">assessment</span></span></a>
+    <div class="workspace-label">YOUR WORKSPACE</div>
+    <a class="nav-item active" href="#workspace"><span aria-hidden="true">▦</span> Assessment studio <span class="nav-dot"></span></a>
+    <a class="nav-item" href="#pipeline"><span aria-hidden="true">≋</span> How it works</a>
+    <div class="sidebar-note"><span class="spark" aria-hidden="true">✧</span><h3>Less grading.<br>More teaching.</h3><p>Thoughtful feedback, grounded in your rubric.</p><span class="mini-tag">POWERED BY LANGGRAPH</span></div>
+    <div class="sidebar-footer"><span class="status-dot"></span> Local workspace <span>v1.0</span></div>
+  </aside>
+  <main id="workspace">
+    <header class="topbar"><span>Workspace <span class="slash">/</span> <strong>Assessment studio</strong></span><span class="private-badge"><span aria-hidden="true">⌂</span> Local session</span></header>
+    <section class="page-heading"><div><div class="eyebrow"><span></span> A LITTLE LESS ADMIN, A LOT MORE IMPACT</div><h1>Good feedback.<br><em>Better learning.</em></h1><p>From answer sheets to meaningful insights.<br>Give every answer the attention it deserves.</p></div><div class="heading-art" aria-hidden="true"><div class="art-orbit"></div><div class="paper paper-back"></div><div class="paper paper-front"><span class="paper-kicker">ASSESSMENT</span><span class="paper-line"></span><span class="paper-line short"></span><div class="paper-score">A<span>+</span></div><span class="paper-line"></span><span class="paper-line short"></span></div><span class="art-check">✓</span><span class="art-star">✧</span></div></section>
+    <div class="studio-grid">
+      <section class="panel input-panel" aria-labelledby="setup-title">
+        <div class="panel-heading"><div><span class="section-number">01</span><h2 id="setup-title">Set up your assessment</h2></div><span class="subtle">Your materials, your standards.</span></div>
+        <form id="assessment-form">
+          <fieldset id="form-fields">
+            <div class="upload-grid">
+              <label class="upload-card"><span class="file-icon" aria-hidden="true">▤</span><span class="upload-title">Question paper <span class="required">*</span></span><span class="upload-description">Questions &amp; maximum marks</span><input type="file" name="question_paper" accept=".pdf,.txt,.md,.png,.jpg,.jpeg,.webp,.gif" required><span class="file-name">Choose a file <span aria-hidden="true">↗</span></span></label>
+              <label class="upload-card"><span class="file-icon sand" aria-hidden="true">≡</span><span class="upload-title">Marking rubric <span class="optional">OPTIONAL</span></span><span class="upload-description">Criteria with explicit marks</span><input type="file" name="rubric" accept=".pdf,.txt,.md,.png,.jpg,.jpeg,.webp,.gif"><span class="file-name">Choose a file <span aria-hidden="true">↗</span></span></label>
+            </div>
+            <div class="model-section"><div class="field-heading"><label for="model-file">Model answers <span class="required">*</span></label><div class="segmented" aria-label="Model answer input"><button type="button" class="selected" id="file-mode" aria-pressed="true">Upload file</button><button type="button" id="text-mode" aria-pressed="false">Paste text</button></div></div>
+              <input id="model-file" type="file" name="model_answers" accept=".pdf,.txt,.md,.png,.jpg,.jpeg,.webp,.gif" required>
+              <textarea id="model-text" name="model_answers_text" rows="5" placeholder="1. The reference answer for question one..." aria-label="Model answers with question labels" hidden disabled></textarea>
+            </div>
+            <label class="student-upload" id="student-drop"><span class="upload-cloud" aria-hidden="true">↥</span><strong>Bring in the student’s work <span class="required">*</span></strong><span>Drop answer sheets here, or <u>browse files</u></span><input type="file" name="answer_files" id="student-files" accept=".pdf,.txt,.md,.png,.jpg,.jpeg,.webp,.gif" multiple required><small>PDF, images, TXT or MD · 50 MB total request limit</small></label>
+            <ol id="file-list" class="file-list" aria-label="Answer sheets in processing order"></ol>
+            <p class="helper">Files are assessed in the order shown. Use ↑ / ↓ to change page order.</p>
+            <details class="settings"><summary><span aria-hidden="true">⚙</span> Model &amp; verification settings <span class="settings-hint">Make it yours</span></summary><div class="settings-grid">
+              <label>Grading provider<select name="provider"><option value="ollama" {% if settings.provider == 'ollama' %}selected{% endif %}>Ollama · local</option><option value="openrouter" {% if settings.provider == 'openrouter' %}selected{% endif %}>OpenRouter · cloud</option></select></label>
+              <label>Re-grade retries<input name="max_grade_retries" type="number" min="0" max="4" value="{{ settings.max_grade_retries }}" required></label>
+              <label>Ollama text model<input name="ollama_model" value="{{ settings.ollama_model }}" required></label>
+              <label>Ollama base URL<input name="ollama_base_url" type="url" value="{{ settings.ollama_base_url }}" required></label>
+              <label>OpenRouter text model<input name="openrouter_model" value="{{ settings.openrouter_model }}" required></label>
+              <label>OpenRouter OCR / vision model<input name="openrouter_vision_model" value="{{ settings.openrouter_vision_model }}" required></label>
+              <label class="check-label"><input type="checkbox" name="use_critic" {% if settings.use_critic %}checked{% endif %}> Enable LLM critic verification</label>
+            </div></details>
+            <div class="privacy-note"><span aria-hidden="true">ⓘ</span><p>PDFs and images go to OpenRouter for OCR, even with local grading. API key required; usage charges may apply. Without a rubric, printed question totals and model answers guide grading.</p></div>
+            <button type="submit" class="primary-button" id="submit-button"><span>Start assessment</span><span aria-hidden="true">↗</span></button>
+          </fieldset>
+        </form>
+        <p id="error-message" class="error" role="alert" hidden></p>
+      </section>
+      <div class="right-column">
+        <section class="panel result-panel" aria-labelledby="results-title"><div class="panel-heading"><div><span class="section-number">02</span><h2 id="results-title">The bigger picture</h2></div><span class="live-pill" id="result-status">READY WHEN YOU ARE</span></div>
+          <div id="empty-results" class="empty-results"><div class="empty-illustration" aria-hidden="true"><span>✓</span><i></i><i></i><i></i></div><h3>Every answer tells a story.</h3><p>Add your documents and start an assessment.<br>Your marks, feedback, and next steps appear here.</p><div class="empty-chips"><span>Evidence-backed</span><span>Rubric-aligned</span></div></div>
+          <div id="results" hidden><div class="score-row"><div><p class="eyebrow">TOTAL MARKS</p><div class="score"><span id="total-score"></span><small id="max-score"></small></div><p id="result-title"></p></div><div class="percentage-badge" id="percentage"></div></div><p class="summary" id="overall-summary"></p><ul id="warnings" class="warning-list"></ul><div class="results-table-wrap"><table><caption class="sr-only">Marks by question</caption><thead><tr><th>Question</th><th>Marks</th><th>Review</th></tr></thead><tbody id="grade-rows"></tbody></table></div><div id="question-feedback"></div><div class="download-row"><button type="button" id="download-report">↓ Feedback report</button><button type="button" id="download-json">↓ Result JSON</button></div><details class="transcript"><summary>View original transcript</summary><pre id="transcript" dir="auto"></pre></details><p class="helper" id="run-info"></p></div>
+        </section>
+        <section class="panel pipeline-panel" id="pipeline"><div class="panel-heading"><div><span class="pipeline-symbol" aria-hidden="true">◈</span><h2>A thoughtful process</h2></div><span class="subtle">6 steps, one clear picture.</span></div><ol class="pipeline-steps" id="pipeline-steps"><li data-node="ingest"><span class="step-marker">1</span><div><strong>Read the material</strong><small>Extract text from your documents</small></div><span class="step-state">Waiting</span></li><li data-node="parse_spec"><span class="step-marker">2</span><div><strong>Understand the standard</strong><small>Map questions, answers &amp; criteria</small></div><span class="step-state">Waiting</span></li><li data-node="clean_align"><span class="step-marker">3</span><div><strong>Connect the answers</strong><small>Align student work to each question</small></div><span class="step-state">Waiting</span></li><li data-node="grade_question"><span class="step-marker">4</span><div><strong>Grade &amp; verify</strong><small>Check evidence, marks &amp; fairness</small></div><span class="step-state">Waiting</span></li><li data-node="aggregate"><span class="step-marker">5</span><div><strong>Bring it together</strong><small>Calculate totals in code</small></div><span class="step-state">Waiting</span></li><li data-node="report"><span class="step-marker">6</span><div><strong>Make feedback matter</strong><small>Write actionable learning insights</small></div><span class="step-state">Waiting</span></li></ol><p id="progress-message" class="pipeline-footer" role="status" aria-live="polite">A clear trail from first page to final feedback.</p></section>
+      </div>
+    </div>
+    <footer class="page-footer"><span>Built for thoughtful educators.</span><span>AI assists. Your judgment leads.</span></footer>
+  </main>
+</body>
+</html>

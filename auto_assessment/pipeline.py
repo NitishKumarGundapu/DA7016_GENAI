@@ -7,8 +7,7 @@ from typing import Iterator
 
 from .config import Settings
 from .graph import build_graph
-from .ingest import load_spec_json, read_text_document
-from .llm import HybridLLM
+from .llm_client import create_llm
 
 
 def tracing_enabled() -> bool:
@@ -18,22 +17,26 @@ def tracing_enabled() -> bool:
     )
 
 
-def _prepare(question_paper, rubric, model_answers, spec_file, answer_files, settings, tags):
+def _prepare(question_paper, rubric, model_answers, model_answers_text, answer_files, settings, tags):
     if not answer_files:
         raise ValueError("Provide at least one answer-sheet file (image / PDF / .txt).")
+    if model_answers and model_answers_text:
+        raise ValueError("Provide either a model-answer file or model_answers_text, not both.")
+    if model_answers_text is not None and not model_answers_text.strip():
+        raise ValueError("Model-answer text must not be blank.")
+    if not (question_paper and (model_answers or model_answers_text)):
+        raise ValueError("Provide question paper and model answers. Rubric is optional.")
     settings = settings or Settings.from_env()
-    llm = HybridLLM(settings)
+    llm = create_llm(settings)
     inputs: dict = {"answer_files": [str(p) for p in answer_files], "warnings": [], "grades": []}
 
-    spec_json = load_spec_json(spec_file) if spec_file else None
-    if spec_json:
-        inputs["spec_json"] = spec_json
-    else:
-        if not (question_paper and rubric and model_answers):
-            raise ValueError("Provide question paper, rubric and model answers (or a JSON spec).")
-        inputs["question_paper"] = read_text_document(question_paper)
-        inputs["rubric"] = read_text_document(rubric)
-        inputs["model_answers"] = read_text_document(model_answers)
+    inputs["question_paper"] = str(question_paper)
+    if rubric:
+        inputs["rubric"] = str(rubric)
+    if model_answers:
+        inputs["model_answers"] = str(model_answers)
+    if model_answers_text:
+        inputs["model_answers_text"] = model_answers_text
 
     run_id = uuid.uuid4()
     config = {
@@ -46,25 +49,25 @@ def _prepare(question_paper, rubric, model_answers, spec_file, answer_files, set
             "max_grade_retries": settings.max_grade_retries,
             "n_answer_files": len(answer_files),
         },
-        "max_concurrency": 4,  # cap parallel graders (rate limits / local GPU)
+        "recursion_limit": max(25, 2 * settings.max_grade_retries + 10),
     }
     return build_graph(llm, settings), inputs, config, run_id
 
 
-def run_assessment(*, question_paper=None, rubric=None, model_answers=None, spec_file=None,
+def run_assessment(*, question_paper=None, rubric=None, model_answers=None, model_answers_text=None,
                    answer_files, settings: Settings | None = None, tags=None) -> dict:
     graph, inputs, config, run_id = _prepare(
-        question_paper, rubric, model_answers, spec_file, answer_files, settings, tags)
+        question_paper, rubric, model_answers, model_answers_text, answer_files, settings, tags)
     state = graph.invoke(inputs, config)
     state["run_id"] = str(run_id)
     return state
 
 
-def stream_assessment(*, question_paper=None, rubric=None, model_answers=None, spec_file=None,
+def stream_assessment(*, question_paper=None, rubric=None, model_answers=None, model_answers_text=None,
                       answer_files, settings: Settings | None = None, tags=None) -> Iterator[dict]:
     """Yields {'type': 'progress', 'node': ..., 'update': ...} then {'type': 'final', 'state': ..., 'run_id': ...}."""
     graph, inputs, config, run_id = _prepare(
-        question_paper, rubric, model_answers, spec_file, answer_files, settings, tags)
+        question_paper, rubric, model_answers, model_answers_text, answer_files, settings, tags)
     final: dict = {}
     for mode, chunk in graph.stream(inputs, config, stream_mode=["updates", "values"]):
         if mode == "updates":

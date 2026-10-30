@@ -1,85 +1,80 @@
-"""File loading: text documents, PDFs and handwritten scans -> model-ready inputs."""
+"""Read text directly; send PDFs and images unchanged to OpenRouter for OCR."""
 from __future__ import annotations
 
 import base64
-import io
-import json
+import os
 from pathlib import Path
 
-IMAGE_EXT = {".png", ".jpg", ".jpeg", ".webp", ".bmp", ".tif", ".tiff"}
+import requests
+
+from .config import Settings
+from .prompts import TRANSCRIBE_SYSTEM
+
+IMAGE_MIME_TYPES = {
+    ".png": "image/png",
+    ".jpg": "image/jpeg",
+    ".jpeg": "image/jpeg",
+    ".webp": "image/webp",
+    ".gif": "image/gif",
+}
 TEXT_EXT = {".txt", ".md"}
 
 
-def read_text_document(path: str) -> str:
-    """Question paper / rubric / model answers -> plain text (txt, md, json, text-based pdf)."""
-    p = Path(path)
-    ext = p.suffix.lower()
-    if ext in TEXT_EXT or ext == ".json":
-        return p.read_text(encoding="utf-8", errors="ignore")
-    if ext == ".pdf":
-        import fitz  # pymupdf
-
-        with fitz.open(p) as doc:
-            text = "\n\n".join(page.get_text() for page in doc)
-        if len(text.strip()) < 20:
-            raise ValueError(
-                f"{p.name} looks like a scanned PDF with no text layer. "
-                "Provide a text PDF / .txt / .md, or a structured .json spec."
-            )
-        return text
-    raise ValueError(f"Unsupported document type: {p.name}")
-
-
-def load_spec_json(path: str) -> dict | None:
-    """If the file is a JSON exam spec, return it as a dict, else None."""
-    p = Path(path)
-    if p.suffix.lower() != ".json":
-        return None
-    return json.loads(p.read_text(encoding="utf-8"))
-
-
-def _encode_pil(img, max_side: int) -> str:
-    from PIL import Image, ImageOps
-
-    img = ImageOps.exif_transpose(img).convert("RGB")  # phone photos are often rotated
-    w, h = img.size
-    scale = max_side / max(w, h)
-    if scale < 1:
-        img = img.resize((int(w * scale), int(h * scale)), Image.LANCZOS)
-    buf = io.BytesIO()
-    img.save(buf, format="JPEG", quality=88)
-    return "data:image/jpeg;base64," + base64.b64encode(buf.getvalue()).decode()
-
-
-def load_page_images(paths: list[str], dpi: int = 200, max_side: int = 1800) -> list[dict]:
-    """Answer-sheet files (images and/or PDFs) -> ordered list of page dicts with data URLs."""
-    from PIL import Image
-
-    pages: list[dict] = []
-    for path in paths:
-        p = Path(path)
-        ext = p.suffix.lower()
-        if ext in IMAGE_EXT:
-            with Image.open(p) as im:
-                pages.append({"page": len(pages) + 1, "source": p.name, "data_url": _encode_pil(im, max_side)})
-        elif ext == ".pdf":
-            import fitz
-
-            with fitz.open(p) as doc:
-                for pg in doc:
-                    pix = pg.get_pixmap(dpi=dpi)
-                    im = Image.frombytes("RGB", (pix.width, pix.height), pix.samples)
-                    pages.append(
-                        {"page": len(pages) + 1, "source": f"{p.name}#p{pg.number + 1}",
-                         "data_url": _encode_pil(im, max_side)}
-                    )
-        elif ext in TEXT_EXT:
-            continue  # handled as already-typed text
-        else:
-            raise ValueError(f"Unsupported answer-sheet file: {p.name}")
-    return pages
-
-
-def load_typed_text(paths: list[str]) -> str:
-    """Already-typed answer files (.txt/.md) - lets you test the pipeline without scans."""
-    return "\n\n".join(Path(p).read_text(encoding="utf-8") for p in paths if Path(p).suffix.lower() in TEXT_EXT)
+def extract_document(path: str, settings: Settings) -> str:
+    """Return one complete document transcript, preserving its original language."""
+    document = Path(path)
+    ext = document.suffix.lower()
+    if ext in TEXT_EXT:
+        text = document.read_text(encoding="utf-8")
+    else:
+        if ext != ".pdf" and ext not in IMAGE_MIME_TYPES:
+            raise ValueError(f"Unsupported document type: {document.name}")
+        api_key = os.getenv("OPENROUTER_API_KEY", "").strip()
+        if not api_key:
+            raise ValueError("OPENROUTER_API_KEY is required for PDF/image OCR, including with Ollama grading.")
+        raw = document.read_bytes()
+        if not raw:
+            raise ValueError(f"{document.name}: document is empty.")
+        mime_type = "application/pdf" if ext == ".pdf" else IMAGE_MIME_TYPES[ext]
+        data_url = f"data:{mime_type};base64,{base64.b64encode(raw).decode('ascii')}"
+        attachment = (
+            {"type": "file", "file": {"filename": document.name, "file_data": data_url}}
+            if ext == ".pdf" else
+            {"type": "image_url", "image_url": {"url": data_url}}
+        )
+        payload = {
+            "model": settings.openrouter_vision_model,
+            "temperature": 0,
+            "messages": [
+                {"role": "system", "content": TRANSCRIBE_SYSTEM},
+                {"role": "user", "content": [
+                    {"type": "text", "text": "Extract all text accurately, in original page order. Return only the transcription."},
+                    attachment,
+                ]},
+            ],
+        }
+        if ext == ".pdf":
+            payload["plugins"] = [{"id": "file-parser", "pdf": {"engine": "mistral-ocr"}}]
+        response = requests.post(
+            "https://openrouter.ai/api/v1/chat/completions",
+            headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
+            json=payload,
+            timeout=(10, 180),
+        )
+        response.raise_for_status()
+        result = response.json()
+        if not isinstance(result, dict):
+            raise ValueError(f"{document.name}: invalid OCR response.")
+        if result.get("error"):
+            raise RuntimeError(f"{document.name}: OpenRouter OCR error: {result['error']}")
+        try:
+            choice = result["choices"][0]
+            text = choice["message"]["content"]
+            finish_reason = choice["finish_reason"]
+        except (KeyError, IndexError, TypeError) as exc:
+            raise ValueError(f"{document.name}: OCR response is missing transcription or completion status.") from exc
+        if finish_reason != "stop":
+            raise ValueError(f"{document.name}: OCR did not complete (finish_reason={finish_reason!r}).")
+    if not isinstance(text, str) or not text.strip():
+        raise ValueError(f"{document.name}: no readable text extracted.")
+    return text
