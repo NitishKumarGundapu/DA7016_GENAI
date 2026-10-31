@@ -7,8 +7,6 @@ student answer sheets, then produces per-question marks, criterion-level evidenc
 and actionable feedback. Grading is orchestrated with LangGraph, model calls use
 LangChain, and the web UI streams progress while the pipeline runs.
 
-> **Human review is part of the design.** The tool checks its own marks and flags
-> uncertain or unverifiable results, but it does not replace an examiner.
 
 ![LangGraph architecture: top-level assessment pipeline and per-question subgraph](docs/langgraph-architecture.png)
 
@@ -33,7 +31,6 @@ LangChain, and the web UI streams progress while the pipeline runs.
   a review sheet with search, filters, sorting, and print/CSV/Markdown/JSON exports.
 - **Provider flexibility.** Grade with local Ollama or OpenRouter. PDF/image OCR is
   always sent to OpenRouter (see [Document extraction](#document-extraction)).
-- **No frontend build step.** Flask plus plain HTML, CSS, and JavaScript.
 - **Docker-ready.** Single-stage `Dockerfile`, non-root runtime, healthcheck, and a
   Compose file with loopback-only publishing.
 

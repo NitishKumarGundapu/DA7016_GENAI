@@ -6,9 +6,10 @@
 dataset.json format:
 [
   {"name": "student_a",
-   "inputs":  {"question_paper": "examples/question_paper.txt",
-               "model_answers": "examples/model_answers.txt",
-               "rubric": "examples/rubric.txt", "answer_files": ["examples/student_answer.txt"]},
+   "inputs":  {"question_paper": "examples/example_0_texts/question_paper.txt",
+               "model_answers": "examples/example_0_texts/model_answers.txt",
+               "rubric": "examples/example_0_texts/rubric.txt",
+               "answer_files": ["examples/example_0_texts/student_answer.txt"]},
    "outputs": {"human_marks": {"1": 4, "2": 3}}}        # human_marks optional
 ]
 
@@ -37,6 +38,7 @@ from auto_assessment.verify import evidence_found  # noqa: E402
 
 
 def target(inputs: dict) -> dict:
+    """LangSmith target: run one assessment and keep the final result."""
     st = run_assessment(question_paper=inputs.get("question_paper"),
                         rubric=inputs.get("rubric"), model_answers=inputs.get("model_answers"),
                         model_answers_text=inputs.get("model_answers_text"),
@@ -45,17 +47,20 @@ def target(inputs: dict) -> dict:
 
 
 def marks_within_bounds(outputs: dict) -> dict:
+    """Every question score must fall between zero and its maximum."""
     ok = all(0 <= g["marks_awarded"] <= g["max_marks"] for g in outputs["result"]["grades"])
     return {"key": "marks_within_bounds", "score": int(ok)}
 
 
 def total_consistency(outputs: dict) -> dict:
+    """The paper total must equal the sum of the per-question marks."""
     r = outputs["result"]
     return {"key": "total_consistency",
             "score": int(abs(r["total"] - sum(g["marks_awarded"] for g in r["grades"])) < 0.01)}
 
 
 def evidence_grounded(outputs: dict) -> dict:
+    """Fraction of awarded criteria whose quote really appears in the answer."""
     hits = tot = 0
     for g in outputs["result"]["grades"]:
         for c in g["criterion_scores"]:
@@ -66,11 +71,13 @@ def evidence_grounded(outputs: dict) -> dict:
 
 
 def all_verified(outputs: dict) -> dict:
+    """Fraction of questions that passed automatic verification."""
     gs = outputs["result"]["grades"]
     return {"key": "all_verified", "score": sum(g["verified"] for g in gs) / max(len(gs), 1)}
 
 
 def mae_vs_human(outputs: dict, reference_outputs: dict) -> dict:
+    """Mean absolute error against optional human marks, normalized by question maxima."""
     human = (reference_outputs or {}).get("human_marks")
     if not human:
         return {"key": "mae_vs_human", "score": None}
@@ -80,11 +87,14 @@ def mae_vs_human(outputs: dict, reference_outputs: dict) -> dict:
 
 
 class _Judge(BaseModel):
+    """Structured response from the feedback-quality judge."""
+
     score: int  # 1-5
     reason: str
 
 
 def feedback_quality(outputs: dict) -> dict:
+    """LLM-as-judge score for how specific and actionable the feedback is."""
     judge = create_llm(Settings.from_env()).structured(_Judge, temperature=0)
     scores = []
     for g in outputs["result"]["grades"]:
@@ -100,6 +110,7 @@ def feedback_quality(outputs: dict) -> dict:
 
 
 def ensure_dataset(client: Client, name: str, path: Path) -> str:
+    """Create the LangSmith dataset from a local JSON file when it does not exist."""
     if client.has_dataset(dataset_name=name):
         return name
     rows = json.loads(path.read_text())

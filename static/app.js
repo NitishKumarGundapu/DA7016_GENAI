@@ -1,3 +1,9 @@
+/**
+ * Assessment studio controller.
+ *
+ * Owns upload ordering, the NDJSON progress stream, and saving the completed run
+ * to sessionStorage so the separate review sheet can read it.
+ */
 "use strict";
 const form = document.querySelector("#assessment-form");
 const fields = document.querySelector("#form-fields");
@@ -18,11 +24,13 @@ let answerFiles = [];
 let assessment = null;
 let busy = false;
 
+/** Show a validation or request error beside the upload form. */
 function showError(message) {
   errorBox.textContent = message;
   errorBox.hidden = false;
 }
 
+/** Create a small DOM node with optional text and class name. */
 function element(tag, text, className) {
   const node = document.createElement(tag);
   if (text !== undefined) node.textContent = text;
@@ -30,6 +38,7 @@ function element(tag, text, className) {
   return node;
 }
 
+/** Render the ordered student-file list with move/remove controls. */
 function renderFiles() {
   fileList.replaceChildren();
   answerFiles.forEach((file, index) => {
@@ -70,6 +79,7 @@ document.querySelectorAll(".upload-card input").forEach(input => {
     input.closest("label").querySelector(".file-name").textContent = input.files[0]?.name || "Choose a file ↗";
   });
 });
+/** Toggle between uploading model answers and pasting them as text. */
 function setMode(mode) {
   for (const candidate of ["file", "text"]) {
     const selected = mode === candidate;
@@ -86,6 +96,7 @@ for (const mode of ["file", "text"]) {
   document.querySelector(`#${mode}-mode`).addEventListener("click", () => setMode(mode));
 }
 
+/** Update one pipeline step's visual state ("done", "running", "failed", or ""). */
 function updateStep(index, state) {
   const step = steps[index];
   if (!step) return;
@@ -94,6 +105,7 @@ function updateStep(index, state) {
   step.querySelector(".step-marker").textContent = state === "done" ? "✓" : index + 1;
 }
 
+/** Reflect the per-question grading progress bar and its accessible values. */
 function updateGradeProgress(completed, total, questionId) {
   gradeProgress.hidden = !total;
   const percent = total ? Math.min(100, Math.round((100 * completed) / total)) : 0;
@@ -107,6 +119,7 @@ function updateGradeProgress(completed, total, questionId) {
     : "0 of 0 questions";
 }
 
+/** Hide and zero the per-question progress bar. */
 function resetGradeProgress() {
   gradeProgress.hidden = true;
   gradeProgressFill.style.width = "0%";
@@ -115,6 +128,7 @@ function resetGradeProgress() {
   gradeProgressText.textContent = "0 of 0 questions";
 }
 
+/** Read the last completed run from this tab, or null when absent/corrupt. */
 function storedAssessment() {
   try {
     const raw = sessionStorage.getItem(REVIEWS_KEY);
@@ -124,6 +138,7 @@ function storedAssessment() {
   }
 }
 
+/** Persist the final result for the review sheet; returns false on quota errors. */
 function storeAssessment(data) {
   try {
     sessionStorage.setItem(REVIEWS_KEY, JSON.stringify({
@@ -138,6 +153,7 @@ function storeAssessment(data) {
   }
 }
 
+/** Enable the review-sheet link only when a saved assessment exists. */
 function updateReviewsLink() {
   const available = Boolean(assessment && storedAssessment());
   reviewsLink.setAttribute("aria-disabled", String(!available));
@@ -146,6 +162,7 @@ function updateReviewsLink() {
   reviewsLink.classList.toggle("ready", available);
 }
 
+/** Apply one streamed event from the assessment endpoint. */
 function handleEvent(event) {
   if (event.type === "error") throw new Error(event.error);
   if (event.type === "progress") {
@@ -175,6 +192,7 @@ function handleEvent(event) {
   }
 }
 
+/** Submit the form and consume the newline-delimited JSON response. */
 form.addEventListener("submit", async event => {
   event.preventDefault();
   if (busy) return;
@@ -205,6 +223,8 @@ form.addEventListener("submit", async event => {
       const error = await response.json();
       throw new Error(error.error || `Request failed (${response.status}).`);
     }
+    // NDJSON can split mid-line between chunks: keep the trailing fragment and
+    // parse only complete lines.
     const reader = response.body.getReader();
     const decoder = new TextDecoder();
     let buffer = "";
@@ -235,6 +255,7 @@ form.addEventListener("submit", async event => {
 
 window.addEventListener("beforeunload", event => { if (busy) event.preventDefault(); });
 
+/** Reset the studio and remove the saved review sheet from this tab. */
 function clearAssessment() {
   sessionStorage.removeItem(REVIEWS_KEY);
   assessment = null;
@@ -268,6 +289,7 @@ reviewsLink.addEventListener("click", event => {
   if (busy || !assessment || !storedAssessment()) event.preventDefault();
 });
 
+/** Re-apply a completed run after a reload so progress and links stay accurate. */
 function restoreStoredAssessment() {
   const stored = storedAssessment();
   if (!stored || !stored.result) return;

@@ -1,4 +1,8 @@
-"""Assessment models and graph state. LLM-facing fields remain required."""
+"""Pydantic models used for LLM structured output and internal results.
+
+The ``Field(description=...)`` strings are sent to the model and are part of the
+prompt contract: keep them precise when changing the grading rules.
+"""
 from __future__ import annotations
 
 import operator
@@ -7,14 +11,18 @@ from typing import Annotated, TypedDict
 from pydantic import BaseModel, Field
 
 
-# ------------------------------------------------------------- exam specification
+# --------------------------------------------------------------------------- exam spec
 class Criterion(BaseModel):
+    """One rubric criterion and the marks explicitly allocated to it."""
+
     name: str = Field(description="Short unique label, e.g. 'Defines gradient descent'")
     description: str = Field(description="What the student must show to earn these marks")
     max_marks: float
 
 
 class Question(BaseModel):
+    """One question aligned across the question paper, model answers, and rubric."""
+
     id: str = Field(description="Question label exactly as printed: '1', '2a', 'Q3(b)' ...")
     text: str = Field(description="Full question text")
     max_marks: float
@@ -26,23 +34,31 @@ class Question(BaseModel):
 
 
 class ExamSpec(BaseModel):
+    """The complete question paper, in printed order."""
+
     title: str
     questions: list[Question]
 
 
-# ------------------------------------------------------------- transcription / segmentation
+# ------------------------------------------------------------------ transcription/alignment
 class AnswerSegment(BaseModel):
+    """A student's answer to exactly one question, copied from the transcript."""
+
     question_id: str = Field(description="Exactly one of the provided question ids")
     attempted: bool
     answer_text: str = Field(description="The student's answer copied from the transcript, verbatim")
 
 
 class Segmentation(BaseModel):
+    """All answer segments returned by the alignment step."""
+
     answers: list[AnswerSegment]
 
 
-# ------------------------------------------------------------- grading
+# --------------------------------------------------------------------------- grading
 class CriterionScore(BaseModel):
+    """A mark proposed by the LLM for one rubric criterion, with evidence."""
+
     criterion: str = Field(description="Criterion name exactly as given in the rubric")
     marks_awarded: float
     evidence: str = Field(
@@ -53,6 +69,8 @@ class CriterionScore(BaseModel):
 
 
 class GradeDraft(BaseModel):
+    """The first-pass grading of one question, before deterministic verification."""
+
     criterion_scores: list[CriterionScore]
     strengths: str = Field(description="What this student did well, quoting their own answer")
     gaps: str = Field(
@@ -64,17 +82,22 @@ class GradeDraft(BaseModel):
 
 
 class CriticVerdict(BaseModel):
+    """Second-opinion review of a grade draft."""
+
     ok: bool
     issues: list[str] = Field(description="Short, actionable problems; empty when ok")
 
 
 class OverallFeedback(BaseModel):
+    """Student-facing summary of the whole paper."""
+
     summary: str = Field(description="3-4 sentence overall assessment of the whole paper")
     top_priorities: list[str] = Field(description="At most 3 study priorities, each citing question ids")
 
 
 class ReportLabels(BaseModel):
     """Report vocabulary translated by the report node, never student scores."""
+
     assessment_report: str
     total: str
     study_priorities: str
@@ -102,6 +125,8 @@ class ReportLabels(BaseModel):
 
 
 class ReportFeedback(OverallFeedback):
+    """Overall feedback plus localized report labels and diagnostics."""
+
     labels: ReportLabels
     diagnostic_translations: list[str] = Field(
         description="Every supplied diagnostic translated into report language, in original order. "
@@ -109,13 +134,17 @@ class ReportFeedback(OverallFeedback):
     )
 
 
-# ------------------------------------------------------------- internal result models
+# --------------------------------------------------------------------------- internal results
 class AssessedCriterion(CriterionScore):
+    """A criterion score after clamping, grounding checks, and withheld-mark calculation."""
+
     max_marks: float
     marks_withheld: float
 
 
 class QuestionGrade(BaseModel):
+    """Final, code-validated result for one question."""
+
     question_id: str
     max_marks: float
     marks_awarded: float
@@ -131,6 +160,12 @@ class QuestionGrade(BaseModel):
 
 
 class GraphState(TypedDict, total=False):
+    """Top-level graph state.
+
+    ``warnings`` is additive: LangGraph merges lists returned by parallel/successive
+    nodes instead of replacing the previous value.
+    """
+
     question_paper: str
     rubric: str
     model_answers: str
@@ -151,6 +186,8 @@ class GraphState(TypedDict, total=False):
 
 
 class QState(TypedDict, total=False):
+    """State for the per-question grade -> verify -> finalize sub-graph."""
+
     question: dict
     answer: dict
     draft: dict

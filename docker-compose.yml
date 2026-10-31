@@ -1,0 +1,49 @@
+name: auto-assessment
+
+services:
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: auto-assessment:latest
+    container_name: auto-assessment
+    init: true
+    restart: unless-stopped
+
+    # Loopback only: this app has no authentication. Use "8001:8001" only behind
+    # a reverse proxy that adds auth/TLS.
+    ports:
+      - "127.0.0.1:8001:8001"
+
+    # Docker Compose reads the local .env file for the ${...} values below.
+    environment:
+      LLM_PROVIDER: ${LLM_PROVIDER:-ollama}
+
+      OPENROUTER_API_KEY: ${OPENROUTER_API_KEY:-}
+      OPENROUTER_MODEL: ${OPENROUTER_MODEL:-openai/gpt-4o}
+      OPENROUTER_VISION_MODEL: ${OPENROUTER_VISION_MODEL:-mistralai/mistral-small-3.1-24b-instruct}
+
+      # host.docker.internal reaches Ollama running on the Docker host.
+      # If Ollama runs in another Compose service (e.g. named "ollama"),
+      # set DOCKER_OLLAMA_BASE_URL=http://ollama:11434.
+      OLLAMA_BASE_URL: ${DOCKER_OLLAMA_BASE_URL:-http://host.docker.internal:11434}
+      OLLAMA_MODEL: ${OLLAMA_MODEL:-qwen2.5:14b}
+      OLLAMA_NUM_CTX: ${OLLAMA_NUM_CTX:-8192}
+
+      USE_CRITIC: ${USE_CRITIC:-true}
+      MAX_GRADE_RETRIES: ${MAX_GRADE_RETRIES:-2}
+      EXTRACTION_REASONING: ${EXTRACTION_REASONING:-false}
+
+      LANGSMITH_TRACING: ${LANGSMITH_TRACING:-false}
+      LANGSMITH_API_KEY: ${LANGSMITH_API_KEY:-}
+      LANGSMITH_PROJECT: ${LANGSMITH_PROJECT:-auto-assessment}
+
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+
+    security_opt:
+      - no-new-privileges:true
+
+    # Uploads are written to /tmp and removed after each run.
+    tmpfs:
+      - /tmp:size=512m

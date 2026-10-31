@@ -1,3 +1,9 @@
+/**
+ * Review-sheet controller.
+ *
+ * Reads the completed assessment from sessionStorage (written by app.js), then
+ * renders the overview, filters, jump list, question cards, and downloads.
+ */
 "use strict";
 const REVIEWS_KEY = "autoAssessment.reviews.v1";
 const assessment = readStored();
@@ -5,12 +11,14 @@ const items = new Map((assessment?.items || []).map(item => [item.question_id, i
 const openQuestions = new Set();
 const numberOrder = new Intl.Collator(undefined, {numeric: true, sensitivity: "base"});
 
+/** Show a recoverable storage/load error at the top of the sheet. */
 function showError(message) {
   const errorBox = document.querySelector("#review-error");
   errorBox.textContent = message;
   errorBox.hidden = false;
 }
 
+/** Parse the saved assessment and validate its minimum shape. */
 function readStored() {
   try {
     const raw = sessionStorage.getItem(REVIEWS_KEY);
@@ -27,6 +35,7 @@ function readStored() {
   }
 }
 
+/** Create a small DOM node with optional text and class name. */
 function element(tag, text, className) {
   const node = document.createElement(tag);
   if (text !== undefined) node.textContent = text;
@@ -34,6 +43,7 @@ function element(tag, text, className) {
   return node;
 }
 
+/** Append a titled feedback block, skipping empty text. */
 function feedbackBlock(parent, title, text) {
   if (!text) return;
   const block = element("section", undefined, "feedback-block");
@@ -42,15 +52,18 @@ function feedbackBlock(parent, title, text) {
   parent.append(block);
 }
 
+/** Human-readable verification/attempt status for a question. */
 function statusText(grade) {
   if (!grade.attempted) return grade.verified ? "Not attempted" : "Not attempted · Needs human review";
   return grade.verified ? "Verification passed" : "Needs human review";
 }
 
+/** Fraction of available marks earned (0 when the question has no marks). */
 function scorePercent(grade) {
   return grade.max_marks > 0 ? grade.marks_awarded / grade.max_marks : 0;
 }
 
+/** Apply the search box, filter, and sort order to the grade list. */
 function visibleGrades(data, search, filter, sort) {
   const query = search.trim().toLocaleLowerCase();
   return data.result.grades.map((grade, index) => ({grade, index})).filter(({grade}) => {
@@ -82,6 +95,7 @@ function visibleGrades(data, search, filter, sort) {
   });
 }
 
+/** Build one expandable question card, including criterion evidence. */
 function renderCard({grade, index}) {
   const item = items.get(grade.question_id) || {};
   const card = element("details", undefined, "review-card");
@@ -158,6 +172,7 @@ function renderCard({grade, index}) {
   return card;
 }
 
+/** Re-render the card list and jump list for the current controls. */
 function renderQuestions() {
   if (!assessment) return;
   const rows = visibleGrades(assessment, document.querySelector("#review-search").value,
@@ -186,6 +201,7 @@ function renderQuestions() {
   }
 }
 
+/** Render the overview panel and initial question list. */
 function render(data) {
   const result = data.result;
   const grades = result.grades;
@@ -219,6 +235,7 @@ function render(data) {
   renderQuestions();
 }
 
+/** Trigger a client-side file download without a server round trip. */
 function download(content, name, type) {
   const url = URL.createObjectURL(new Blob([content], {type}));
   const link = element("a");
@@ -230,6 +247,7 @@ function download(content, name, type) {
   setTimeout(() => URL.revokeObjectURL(url), 1000);
 }
 
+/** Build a spreadsheet-safe CSV of every question score. */
 function scoresCSV(grades) {
   const rows = [
     ["Question", "Awarded", "Maximum", "Withheld", "Score (%)", "Attempted", "Verification", "Notes"],

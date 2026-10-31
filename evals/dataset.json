@@ -2,10 +2,10 @@
   {
     "name": "typed_demo_student",
     "inputs": {
-      "question_paper": "examples/question_paper.txt",
-      "model_answers": "examples/model_answers.txt",
-      "rubric": "examples/rubric.txt",
-      "answer_files": ["examples/student_answer.txt"]
+      "question_paper": "examples/example_0_texts/question_paper.txt",
+      "model_answers": "examples/example_0_texts/model_answers.txt",
+      "rubric": "examples/example_0_texts/rubric.txt",
+      "answer_files": ["examples/example_0_texts/student_answer.txt"]
     },
     "outputs": {"human_marks": {"1": 5, "2": 2.5, "3": 0}}
   }

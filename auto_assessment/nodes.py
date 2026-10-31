@@ -1,4 +1,10 @@
-"""Callable LangGraph nodes for assessment and per-question grading."""
+"""LangGraph node implementations.
+
+Top-level nodes (``IngestNode`` through ``ReportNode``) move one assessment through
+the pipeline. The remaining nodes make up the per-question grade/verify loop.
+Nodes are classes so dependencies (LLM client, settings) can be injected once when
+the graph is compiled.
+"""
 from __future__ import annotations
 
 import json
@@ -13,8 +19,8 @@ from . import prompts as P
 from .config import Settings
 from .ingest import extract_document
 from .llm_client import LLMClient
-from .report import render_report
 from .models import (
+    AnswerSegment,
     Criterion,
     CriticVerdict,
     ExamSpec,
@@ -25,6 +31,7 @@ from .models import (
     ReportFeedback,
     Segmentation,
 )
+from .report import render_report
 from .verify import (
     build_failed,
     build_grade,
@@ -40,6 +47,7 @@ logger = logging.getLogger(__name__)
 
 
 def _criteria_text(question: Question) -> str:
+    """Render a question's rubric as bullet points for a prompt."""
     return "\n".join(
         f"- {criterion.name} ({criterion.max_marks} marks): {criterion.description}"
         for criterion in question.criteria
@@ -47,6 +55,7 @@ def _criteria_text(question: Question) -> str:
 
 
 def _whole_question_criterion(question: Question) -> Criterion:
+    """Fallback criterion used when no explicit rubric allocations are available."""
     return Criterion(
         name="Whole question",
         description=(
@@ -59,13 +68,16 @@ def _whole_question_criterion(question: Question) -> Criterion:
 
 
 class IngestNode:
+    """Extract text from every uploaded document, preserving role and order."""
+
     def __init__(self, settings: Settings):
         self.settings = settings
 
     def __call__(self, state: GraphState) -> dict:
-        warnings = []
+        warnings: list[str] = []
 
         def extract(paths: list[str], role: str) -> str:
+            """Extract and label every document for one input role."""
             documents = []
             for index, path in enumerate(paths, start=1):
                 text = extract_document(path, self.settings)
@@ -85,6 +97,7 @@ class IngestNode:
                 output[role] = state["model_answers_text"]
             else:
                 output[role] = extract([state[role]], role)
+
         output["transcript"] = extract(state["answer_files"], "student answer sheet")
         output["document_count"] = len(state["answer_files"])
         if not output["transcript"].strip():
@@ -93,6 +106,8 @@ class IngestNode:
 
 
 class ParseSpecNode:
+    """Align the question paper, optional rubric, and model answers into an ``ExamSpec``."""
+
     def __init__(self, llm: LLMClient, settings: Settings):
         self.llm = llm
         self.settings = settings
@@ -105,11 +120,11 @@ class ParseSpecNode:
         )
         spec = self.llm.structured(
             ExamSpec, temperature=0, reasoning=self.settings.extraction_reasoning
-        ).invoke(
-            [SystemMessage(content=P.PARSE_SPEC_SYSTEM), HumanMessage(content=human)]
-        )
-        warnings = []
+        ).invoke([SystemMessage(content=P.PARSE_SPEC_SYSTEM), HumanMessage(content=human)])
+
+        warnings: list[str] = []
         if not state.get("rubric"):
+            # No rubric: grade each question as a whole against its model answer.
             for question in spec.questions:
                 question.criteria = [_whole_question_criterion(question)]
         else:
@@ -120,29 +135,70 @@ class ParseSpecNode:
                         f"Q{question.id}: the supplied rubric had no explicit criterion marks; "
                         "graded against the model answer using the question's full mark total."
                     )
+
         spec, validation_warnings = normalize_spec(spec)
         warnings.extend(validation_warnings)
         return {"spec": spec.model_dump(), "warnings": warnings}
 
 
+def _alignment_result(
+    question: Question,
+    answer: AnswerSegment | None,
+    attempted: bool,
+    duplicate: bool,
+    transcript: str,
+) -> tuple[str, str | None]:
+    """Return the answer text that may be shown, plus a skip reason if it is unsafe.
+
+    Marks are withheld when alignment is missing, duplicated, contradictory, or when
+    the quoted answer cannot be grounded in the transcript.
+    """
+    if answer is None:
+        return "", (
+            f"Q{question.id}: no aligned answer segment was found; "
+            "marks withheld pending human review."
+        )
+    if duplicate:
+        return "", (
+            f"Q{question.id}: duplicate answer segments were returned; "
+            "marks withheld pending human review."
+        )
+    if answer.attempted != attempted:
+        return answer.answer_text, (
+            f"Q{question.id}: attempted flag contradicts extracted answer text; "
+            "marks withheld pending human review."
+        )
+    if attempted and not evidence_found(answer.answer_text, transcript, threshold=100):
+        return "", (
+            f"Q{question.id}: aligned answer is not grounded in the student transcript; "
+            "marks withheld pending human review."
+        )
+    return answer.answer_text, None
+
+
 class CleanAlignNode:
+    """Split the transcript into per-question answers and build display items."""
+
     def __init__(self, llm: LLMClient, settings: Settings):
         self.llm = llm
         self.settings = settings
 
     def __call__(self, state: GraphState) -> dict:
         spec = ExamSpec.model_validate(state["spec"])
-        question_list = "\n".join(f"- id={q.id}: {q.text}" for q in spec.questions)
+        question_list = "\n".join(f"- id={question.id}: {question.text}" for question in spec.questions)
         segmentation = self.llm.structured(
             Segmentation, temperature=0, reasoning=self.settings.extraction_reasoning
         ).invoke([
             SystemMessage(content=P.SEGMENT_SYSTEM),
-            HumanMessage(content=f"QUESTIONS:\n{question_list}\n\nTRANSCRIPT:\n{state['transcript']}"),
+            HumanMessage(
+                content=f"QUESTIONS:\n{question_list}\n\nTRANSCRIPT:\n{state['transcript']}"
+            ),
         ])
+
         expected = {norm_qid(question.id) for question in spec.questions}
-        by_id = {}
+        by_id: dict[str, AnswerSegment] = {}
         duplicates: set[str] = set()
-        warnings = []
+        warnings: list[str] = []
         for answer in segmentation.answers:
             key = norm_qid(answer.question_id)
             if key not in expected:
@@ -154,37 +210,18 @@ class CleanAlignNode:
                 duplicates.add(key)
                 continue
             by_id[key] = answer
-        answers, items = [], []
+
+        # Strip document separators so evidence checks only see student text.
         transcript = re.sub(r"(?m)^=== DOCUMENT \d+ ===\n?", "", state["transcript"])
+        answers, items = [], []
         for question in spec.questions:
             key = norm_qid(question.id)
             answer = by_id.get(key)
             attempted = bool(answer.answer_text.strip()) if answer else False
-            visible_answer = answer.answer_text if answer else ""
-            skip_reason = None
-            if answer is None:
-                visible_answer = ""
-                skip_reason = (
-                    f"Q{question.id}: no aligned answer segment was found; "
-                    "marks withheld pending human review."
-                )
-            elif key in duplicates:
-                visible_answer = ""
-                skip_reason = (
-                    f"Q{question.id}: duplicate answer segments were returned; "
-                    "marks withheld pending human review."
-                )
-            elif answer.attempted != attempted:
-                skip_reason = (
-                    f"Q{question.id}: attempted flag contradicts extracted answer text; "
-                    "marks withheld pending human review."
-                )
-            elif attempted and not evidence_found(answer.answer_text, transcript, threshold=100):
-                visible_answer = ""
-                skip_reason = (
-                    f"Q{question.id}: aligned answer is not grounded in the student transcript; "
-                    "marks withheld pending human review."
-                )
+            visible_answer, skip_reason = _alignment_result(
+                question, answer, attempted, key in duplicates, transcript
+            )
+
             entry = {
                 "question_id": question.id,
                 "attempted": attempted,
@@ -201,10 +238,13 @@ class CleanAlignNode:
                 "rubric": _criteria_text(question),
                 "max_marks": question.max_marks,
             })
+
         return {"answers": answers, "items": items, "warnings": warnings}
 
 
 class GradeQuestionsNode:
+    """Invoke the per-question sub-graph for each aligned answer."""
+
     def __init__(self, question_graph):
         self.question_graph = question_graph
 
@@ -212,16 +252,14 @@ class GradeQuestionsNode:
         spec = ExamSpec.model_validate(state["spec"])
         writer = get_stream_writer()
         total = len(spec.questions)
-        grades = []
-        warnings = []
+        grades: list[dict] = []
+        warnings: list[str] = []
+
         for index, (question, answer) in enumerate(
             zip(spec.questions, state["answers"]), start=1
         ):
-            writer({
-                "completed": index - 1,
-                "total": total,
-                "question_id": question.id,
-            })
+            writer({"completed": index - 1, "total": total, "question_id": question.id})
+
             skip_reason = answer.get("skip_reason")
             if skip_reason:
                 logger.warning("Skipping question=%s: %s", question.id, skip_reason)
@@ -262,15 +300,15 @@ class GradeQuestionsNode:
                         f"Q{question.id}: grading failed and the question was skipped; "
                         "human review required."
                     )
-            writer({
-                "completed": index,
-                "total": total,
-                "question_id": question.id,
-            })
+
+            writer({"completed": index, "total": total, "question_id": question.id})
+
         return {"grades": grades, "warnings": warnings}
 
 
 class AggregateNode:
+    """Order grades by the question paper and compute totals in code."""
+
     def __call__(self, state: GraphState) -> dict:
         spec = ExamSpec.model_validate(state["spec"])
         order = {question.id: index for index, question in enumerate(spec.questions)}
@@ -283,7 +321,8 @@ class AggregateNode:
         warnings = [
             f"Q{grade['question_id']}: grading still had open verification issues after "
             f"{grade['attempts']} attempt(s) - see notes."
-            for grade in grades if not grade["verified"]
+            for grade in grades
+            if not grade["verified"]
         ]
         result = {
             "title": spec.title,
@@ -296,6 +335,8 @@ class AggregateNode:
 
 
 class ReportNode:
+    """Write localized overall feedback and render the final Markdown report."""
+
     def __init__(self, llm: LLMClient):
         self.llm = llm
 
@@ -306,24 +347,35 @@ class ReportNode:
             *warnings,
             *(note for grade in result["grades"] for note in grade["verification_notes"]),
         ]
-        rows = json.dumps([
-            {**item, "evaluation": grade}
-            for item, grade in zip(state["items"], result["grades"])
-        ], ensure_ascii=False)
+        rows = json.dumps(
+            [
+                {**item, "evaluation": grade}
+                for item, grade in zip(state["items"], result["grades"])
+            ],
+            ensure_ascii=False,
+        )
         overall = self.llm.structured(ReportFeedback, temperature=0.2).invoke([
             SystemMessage(content=P.OVERALL_SYSTEM),
-            HumanMessage(content=P.OVERALL_HUMAN.format(
-                title=result["title"],
-                total=result["total"],
-                max_total=result["max_total"],
-                rows=rows,
-                question_paper="\n".join(item["question"] for item in state["items"]),
-                diagnostics=json.dumps(diagnostics, ensure_ascii=False),
-            )),
+            HumanMessage(
+                content=P.OVERALL_HUMAN.format(
+                    title=result["title"],
+                    total=result["total"],
+                    max_total=result["max_total"],
+                    rows=rows,
+                    question_paper="\n".join(item["question"] for item in state["items"]),
+                    diagnostics=json.dumps(diagnostics, ensure_ascii=False),
+                )
+            ),
         ])
+
         translations = overall.diagnostic_translations
         if len(translations) != len(diagnostics):
-            raise ValueError("Report omitted diagnostic translations; cannot hide review warnings.")
+            raise ValueError(
+                "Report omitted diagnostic translations; cannot hide review warnings."
+            )
+
+        # Replace internal diagnostics with their report-language translations, in
+        # the same order they were supplied to the model.
         grades = []
         offset = len(warnings)
         for original in result["grades"]:
@@ -337,6 +389,7 @@ class ReportNode:
                 grade["gaps"] = overall.labels.unattempted
                 grade["how_to_improve"] = overall.labels.attempt_advice
             grades.append(grade)
+
         full = {
             **result,
             "grades": grades,
@@ -346,19 +399,21 @@ class ReportNode:
         return {
             "overall": overall.model_dump(),
             "result": full,
-            "report_md": render_report(
-                full, state.get("transcript", ""), full["warnings"]
-            ),
+            "report_md": render_report(full, state.get("transcript", ""), full["warnings"]),
         }
 
 
 class SkipQuestionNode:
+    """Produce a zero-mark grade without calling the model for unattempted questions."""
+
     def __call__(self, state: QState) -> dict:
         question = Question.model_validate(state["question"])
         return {"grade": build_unattempted(question).model_dump()}
 
 
 class GradeQuestionNode:
+    """Ask the model to score every criterion for one question."""
+
     def __init__(self, llm: LLMClient, settings: Settings):
         self.llm = llm
         self.settings = settings
@@ -366,9 +421,11 @@ class GradeQuestionNode:
     def __call__(self, state: QState) -> dict:
         question = Question.model_validate(state["question"])
         issues = state.get("issues") or []
-        critique = P.RETRY_BLOCK.format(
-            issues="\n".join(f"- {issue}" for issue in issues)
-        ) if issues else ""
+        critique = (
+            P.RETRY_BLOCK.format(issues="\n".join(f"- {issue}" for issue in issues))
+            if issues
+            else ""
+        )
         human = P.GRADE_HUMAN.format(
             item=json.dumps({
                 "question_id": question.id,
@@ -390,6 +447,8 @@ class GradeQuestionNode:
 
 
 class VerifyQuestionNode:
+    """Apply deterministic checks, then an optional LLM critic, to a grade draft."""
+
     def __init__(self, llm: LLMClient, settings: Settings):
         self.llm = llm
         self.settings = settings
@@ -399,8 +458,10 @@ class VerifyQuestionNode:
         answer = state["answer"]["answer_text"]
         draft = GradeDraft.model_validate(state["draft"])
         issues = check_draft(question, answer, draft)
+
         if "[illegible]" in answer or "[?]" in answer:
             issues.append("Answer contains uncertain transcription; human review required.")
+
         if not issues and self.settings.use_critic:
             human = P.CRITIC_HUMAN.format(
                 qid=question.id,
@@ -416,10 +477,13 @@ class VerifyQuestionNode:
             )
             if not verdict.ok:
                 issues = list(verdict.issues) or ["Critic rejected the grading."]
+
         return {"issues": issues}
 
 
 class FinalizeQuestionNode:
+    """Clamp marks, attach evidence, and produce the final per-question grade."""
+
     def __call__(self, state: QState) -> dict:
         question = Question.model_validate(state["question"])
         grade = build_grade(

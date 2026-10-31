@@ -1,11 +1,18 @@
+# Orchestration and model clients
 langgraph>=0.6
 langchain-core>=0.3
 langchain-openai>=0.3
 langchain-ollama>=0.3
 langsmith>=0.4
+
+# Data models and utilities
 pydantic>=2.7
 requests>=2.32
 rapidfuzz>=3.9
 python-dotenv>=1.0
+
+# Web UI
 Flask>=3.0
+
+# Test suite
 pytest>=8.0

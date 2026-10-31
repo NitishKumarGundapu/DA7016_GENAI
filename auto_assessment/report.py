@@ -1,60 +1,92 @@
-"""Markdown report renderer."""
+"""Render the student-facing Markdown report."""
+from __future__ import annotations
 
 
-def _cell(s: str) -> str:
-    return (s or "").replace("|", "\\|").replace("\n", " ").strip()
+def _cell(value: str) -> str:
+    """Escape a value for a Markdown table cell."""
+    return (value or "").replace("|", "\\|").replace("\n", " ").strip()
 
 
 def render_report(result: dict, transcript: str, warnings: list[str]) -> str:
+    """Build the complete Markdown report from a final ``result`` mapping.
+
+    Headings and status labels come from ``result["overall"]["labels"]`` so the
+    report follows the language of the question paper.
+    """
     labels = result["overall"]["labels"]
-    L: list[str] = []
-    L.append(f"# {result['title']} - {labels['assessment_report']}\n")
-    L.append(f"## {labels['total']}: **{result['total']} / {result['max_total']}** ({result['percentage']}%)\n")
+    lines: list[str] = []
+    lines.append(f"# {result['title']} - {labels['assessment_report']}\n")
+    lines.append(
+        f"## {labels['total']}: **{result['total']} / {result['max_total']}** "
+        f"({result['percentage']}%)\n"
+    )
 
-    ov = result.get("overall")
-    if ov:
-        L.append(ov["summary"] + "\n")
-        if ov.get("top_priorities"):
-            L.append(f"**{labels['study_priorities']}**")
-            L += [f"{i}. {p}" for i, p in enumerate(ov["top_priorities"], 1)]
-            L.append("")
+    overall = result.get("overall")
+    if overall:
+        lines.append(overall["summary"] + "\n")
+        if overall.get("top_priorities"):
+            lines.append(f"**{labels['study_priorities']}**")
+            lines.extend(
+                f"{index}. {priority}"
+                for index, priority in enumerate(overall["top_priorities"], 1)
+            )
+            lines.append("")
 
-    L.append(f"## {labels['marks_by_question']}\n")
-    L.append(f"| {labels['question']} | {labels['marks']} | {labels['attempted']} | {labels['verified']} |")
-    L.append("|---|-------|-----------|----------------|")
-    for g in result["grades"]:
-        L.append(f"| {_cell(g['question_id'])} | {g['marks_awarded']} / {g['max_marks']} | "
-                 f"{labels['yes'] if g['attempted'] else labels['no']} | "
-                 f"{labels['yes'] if g['verified'] else labels['no']} |")
-    L.append("")
+    lines.append(f"## {labels['marks_by_question']}\n")
+    lines.append(
+        f"| {labels['question']} | {labels['marks']} | {labels['attempted']} | "
+        f"{labels['verified']} |"
+    )
+    lines.append("|---|-------|-----------|----------------|")
+    for grade in result["grades"]:
+        lines.append(
+            f"| {_cell(grade['question_id'])} | "
+            f"{grade['marks_awarded']} / {grade['max_marks']} | "
+            f"{labels['yes'] if grade['attempted'] else labels['no']} | "
+            f"{labels['yes'] if grade['verified'] else labels['no']} |"
+        )
+    lines.append("")
 
-    L.append(f"## {labels['detailed_feedback']}\n")
-    for g in result["grades"]:
-        L.append(f"### {labels['question']} {g['question_id']} - {g['marks_awarded']} / {g['max_marks']}\n")
-        if g["criterion_scores"]:
-            L.append(f"| {labels['criterion']} | {labels['marks']} | {labels['maximum']} | "
-                     f"{labels['withheld']} | {labels['evidence']} | {labels['justification']} |")
-            L.append("|-----------|-------|---------|----------|----------|-----|")
-            for c in g["criterion_scores"]:
-                L.append(f"| {_cell(c['criterion'])} | {c['marks_awarded']} | {c['max_marks']} | "
-                         f"{c['marks_withheld']} | "
-                         f"{_cell(c['evidence'])} | {_cell(c['justification'])} |")
-            L.append("")
-        if g["strengths"]:
-            L.append(f"**{labels['strengths']}:** {g['strengths']}\n")
-        if g["gaps"]:
-            L.append(f"**{labels['gaps']}:** {g['gaps']}\n")
-        if g["how_to_improve"]:
-            L.append(f"**{labels['improvement']}:** {g['how_to_improve']}\n")
-        if g["verification_notes"]:
-            L.append(f"> {labels['verification_notes']}: " + "; ".join(g["verification_notes"]) + "\n")
+    lines.append(f"## {labels['detailed_feedback']}\n")
+    for grade in result["grades"]:
+        lines.append(
+            f"### {labels['question']} {grade['question_id']} - "
+            f"{grade['marks_awarded']} / {grade['max_marks']}\n"
+        )
+
+        if grade["criterion_scores"]:
+            lines.append(
+                f"| {labels['criterion']} | {labels['marks']} | {labels['maximum']} | "
+                f"{labels['withheld']} | {labels['evidence']} | {labels['justification']} |"
+            )
+            lines.append("|-----------|-------|---------|----------|----------|-----|")
+            for criterion in grade["criterion_scores"]:
+                lines.append(
+                    f"| {_cell(criterion['criterion'])} | {criterion['marks_awarded']} | "
+                    f"{criterion['max_marks']} | {criterion['marks_withheld']} | "
+                    f"{_cell(criterion['evidence'])} | {_cell(criterion['justification'])} |"
+                )
+            lines.append("")
+
+        if grade["strengths"]:
+            lines.append(f"**{labels['strengths']}:** {grade['strengths']}\n")
+        if grade["gaps"]:
+            lines.append(f"**{labels['gaps']}:** {grade['gaps']}\n")
+        if grade["how_to_improve"]:
+            lines.append(f"**{labels['improvement']}:** {grade['how_to_improve']}\n")
+        if grade["verification_notes"]:
+            lines.append(
+                f"> {labels['verification_notes']}: "
+                + "; ".join(grade["verification_notes"])
+                + "\n"
+            )
 
     if warnings:
-        L.append(f"## {labels['warnings']}\n")
-        L += [f"- {w}" for w in warnings]
-        L.append("")
+        lines.append(f"## {labels['warnings']}\n")
+        lines.extend(f"- {warning}" for warning in warnings)
+        lines.append("")
 
-    L.append(f"<details><summary>{labels['transcript']}</summary>\n")
-    L.append("```\n" + transcript.strip() + "\n```\n")
-    L.append("</details>")
-    return "\n".join(L)
+    lines.append(f"<details><summary>{labels['transcript']}</summary>\n")
+    lines.append("```\n" + transcript.strip() + "\n```\n")
+    lines.append("</details>")
+    return "\n".join(lines)
