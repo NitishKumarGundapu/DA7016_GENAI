@@ -7,6 +7,13 @@ const status = document.querySelector("#result-status");
 const progress = document.querySelector("#progress-message");
 const studentInput = document.querySelector("#student-files");
 const fileList = document.querySelector("#file-list");
+const reviewsLink = document.querySelector("#reviews-link");
+const clearButtons = [document.querySelector("#clear-button")];
+const gradeProgress = document.querySelector("#grade-progress");
+const gradeProgressTrack = document.querySelector("#grade-progress-track");
+const gradeProgressFill = document.querySelector("#grade-progress-fill");
+const gradeProgressText = document.querySelector("#grade-progress-text");
+const REVIEWS_KEY = "autoAssessment.reviews.v1";
 let answerFiles = [];
 let assessment = null;
 let busy = false;
@@ -63,19 +70,20 @@ document.querySelectorAll(".upload-card input").forEach(input => {
     input.closest("label").querySelector(".file-name").textContent = input.files[0]?.name || "Choose a file ↗";
   });
 });
+function setMode(mode) {
+  for (const candidate of ["file", "text"]) {
+    const selected = mode === candidate;
+    const button = document.querySelector(`#${candidate}-mode`);
+    button.classList.toggle("selected", selected);
+    button.setAttribute("aria-pressed", String(selected));
+    const input = document.querySelector(`#model-${candidate}`);
+    input.hidden = !selected;
+    input.disabled = !selected;
+    input.required = selected;
+  }
+}
 for (const mode of ["file", "text"]) {
-  document.querySelector(`#${mode}-mode`).addEventListener("click", () => {
-    for (const candidate of ["file", "text"]) {
-      const selected = mode === candidate;
-      const button = document.querySelector(`#${candidate}-mode`);
-      button.classList.toggle("selected", selected);
-      button.setAttribute("aria-pressed", String(selected));
-      const input = document.querySelector(`#model-${candidate}`);
-      input.hidden = !selected;
-      input.disabled = !selected;
-      input.required = selected;
-    }
-  });
+  document.querySelector(`#${mode}-mode`).addEventListener("click", () => setMode(mode));
 }
 
 function updateStep(index, state) {
@@ -86,55 +94,56 @@ function updateStep(index, state) {
   step.querySelector(".step-marker").textContent = state === "done" ? "✓" : index + 1;
 }
 
-function feedbackBlock(parent, title, text) {
-  if (!text) return;
-  const block = element("div", undefined, "feedback-block");
-  block.dir = "auto";
-  block.append(element("h4", title), element("p", text));
-  parent.append(block);
+function updateGradeProgress(completed, total, questionId) {
+  gradeProgress.hidden = !total;
+  const percent = total ? Math.min(100, Math.round((100 * completed) / total)) : 0;
+  gradeProgressFill.style.width = `${percent}%`;
+  gradeProgressTrack.setAttribute("aria-valuemax", String(total || 0));
+  gradeProgressTrack.setAttribute("aria-valuenow", String(completed));
+  gradeProgressText.textContent = total
+    ? (completed >= total
+      ? `${total} of ${total} questions graded`
+      : `Question ${questionId} · ${completed} of ${total} graded`)
+    : "0 of 0 questions";
 }
 
-function renderResults(data) {
-  const result = data.result;
-  document.querySelector("#empty-results").hidden = true;
-  document.querySelector("#results").hidden = false;
-  document.querySelector("#total-score").textContent = result.total;
-  document.querySelector("#max-score").textContent = `/ ${result.max_total}`;
-  document.querySelector("#percentage").textContent = `${result.percentage}%`;
-  document.querySelector("#result-title").textContent = result.title;
-  document.querySelector("#overall-summary").textContent = result.overall.summary;
-  const warnings = document.querySelector("#warnings");
-  warnings.replaceChildren(...(result.warnings || []).map(text => element("li", text)));
-  const rows = document.querySelector("#grade-rows");
-  const details = document.querySelector("#question-feedback");
-  rows.replaceChildren();
-  details.replaceChildren();
-  for (const grade of result.grades) {
-    const row = element("tr");
-    const review = element("td");
-    review.append(element("span", grade.verified ? "Verified" : "Review needed", `review-tag${grade.verified ? "" : " needs-review"}`));
-    row.append(element("td", `${grade.question_id}${grade.attempted ? "" : " · Not attempted"}`), element("td", `${grade.marks_awarded} / ${grade.max_marks}`), review);
-    rows.append(row);
-    const detail = element("details", undefined, "question-detail");
-    detail.append(element("summary", `Question ${grade.question_id} · ${grade.marks_awarded} / ${grade.max_marks}`));
-    for (const criterion of grade.criterion_scores) {
-      const card = element("div", undefined, "criterion");
-      card.dir = "auto";
-      card.append(element("strong", `${criterion.criterion} · ${criterion.marks_awarded} / ${criterion.max_marks}`));
-      card.append(element("span", `Withheld: ${criterion.marks_withheld}`));
-      if (criterion.evidence) card.append(element("blockquote", criterion.evidence));
-      card.append(element("p", criterion.justification));
-      detail.append(card);
-    }
-    feedbackBlock(detail, "Strengths", grade.strengths);
-    feedbackBlock(detail, "Gaps", grade.gaps);
-    feedbackBlock(detail, "How to improve", grade.how_to_improve);
-    feedbackBlock(detail, "Verification notes", grade.verification_notes.join("\n"));
-    details.append(detail);
+function resetGradeProgress() {
+  gradeProgress.hidden = true;
+  gradeProgressFill.style.width = "0%";
+  gradeProgressTrack.setAttribute("aria-valuemax", "0");
+  gradeProgressTrack.setAttribute("aria-valuenow", "0");
+  gradeProgressText.textContent = "0 of 0 questions";
+}
+
+function storedAssessment() {
+  try {
+    const raw = sessionStorage.getItem(REVIEWS_KEY);
+    return raw ? JSON.parse(raw) : null;
+  } catch (error) {
+    return null;
   }
-  feedbackBlock(details, "Study priorities", result.overall.top_priorities.join("\n"));
-  document.querySelector("#transcript").textContent = data.transcript;
-  document.querySelector("#run-info").textContent = data.tracing ? `LangSmith run: ${data.run_id}` : `Run: ${data.run_id} · LangSmith tracing is off.`;
+}
+
+function storeAssessment(data) {
+  try {
+    sessionStorage.setItem(REVIEWS_KEY, JSON.stringify({
+      result: data.result, report_md: data.report_md, transcript: data.transcript,
+      items: data.items, run_id: data.run_id, tracing: data.tracing,
+      saved_at: new Date().toISOString(),
+    }));
+    return true;
+  } catch (error) {
+    console.warn("Could not keep the review sheet in this browser.", error);
+    return false;
+  }
+}
+
+function updateReviewsLink() {
+  const available = Boolean(assessment && storedAssessment());
+  reviewsLink.setAttribute("aria-disabled", String(!available));
+  reviewsLink.tabIndex = available ? 0 : -1;
+  reviewsLink.classList.toggle("disabled", !available);
+  reviewsLink.classList.toggle("ready", available);
 }
 
 function handleEvent(event) {
@@ -146,13 +155,23 @@ function handleEvent(event) {
       updateStep(index + 1, "running");
       progress.textContent = `${index + 1} of ${steps.length} steps complete. ${steps[index + 1]?.querySelector("strong").textContent || "Finishing up"}…`;
     }
+  } else if (event.type === "question") {
+    updateGradeProgress(event.completed, event.total, event.question_id);
+    if (event.completed < event.total) {
+      progress.textContent = `Grading question ${event.completed + 1} of ${event.total} · ${event.completed} finished.`;
+    }
   } else if (event.type === "final") {
     assessment = event;
-    renderResults(event);
     steps.forEach((_, index) => updateStep(index, "done"));
     status.textContent = "ASSESSMENT COMPLETE";
     status.className = "live-pill complete";
     progress.textContent = "Assessment complete. Review any flagged answers before using these marks.";
+    const grades = event.result.grades || [];
+    updateGradeProgress(grades.length, grades.length, "");
+    if (!storeAssessment(event)) {
+      progress.textContent = "Assessment complete, but the review sheet could not be stored in this browser (storage limit). Download the report instead.";
+    }
+    updateReviewsLink();
   }
 }
 
@@ -171,8 +190,10 @@ form.addEventListener("submit", async event => {
   busy = true;
   assessment = null;
   fields.disabled = true;
-  document.querySelector("#results").hidden = true;
-  document.querySelector("#empty-results").hidden = false;
+  clearButtons.forEach(button => { if (button) button.disabled = true; });
+  sessionStorage.removeItem(REVIEWS_KEY);
+  updateReviewsLink();
+  resetGradeProgress();
   document.querySelector("#submit-button span").textContent = "Assessment in progress…";
   status.textContent = "ASSESSING";
   status.className = "live-pill running";
@@ -206,25 +227,59 @@ form.addEventListener("submit", async event => {
   } finally {
     busy = false;
     fields.disabled = false;
+    clearButtons.forEach(button => { if (button) button.disabled = false; });
     document.querySelector("#submit-button span").textContent = "Start assessment";
     renderFiles();
   }
 });
 
-function download(content, name, type) {
-  const url = URL.createObjectURL(new Blob([content], {type}));
-  const link = element("a");
-  link.href = url;
-  link.download = name;
-  document.body.append(link);
-  link.click();
-  link.remove();
-  setTimeout(() => URL.revokeObjectURL(url), 1000);
-}
-document.querySelector("#download-report").addEventListener("click", () => {
-  if (assessment) download(assessment.report_md, "report.md", "text/markdown;charset=utf-8");
-});
-document.querySelector("#download-json").addEventListener("click", () => {
-  if (assessment) download(JSON.stringify(assessment.result, null, 2), "result.json", "application/json");
-});
 window.addEventListener("beforeunload", event => { if (busy) event.preventDefault(); });
+
+function clearAssessment() {
+  sessionStorage.removeItem(REVIEWS_KEY);
+  assessment = null;
+  answerFiles = [];
+  form.reset();
+  setMode("file");
+  document.querySelectorAll(".upload-card .file-name").forEach(label => {
+    label.textContent = "Choose a file ↗";
+  });
+  renderFiles();
+  document.querySelector("#error-message").hidden = true;
+  steps.forEach((_, index) => updateStep(index, ""));
+  status.textContent = "READY WHEN YOU ARE";
+  status.className = "live-pill";
+  progress.textContent = "A clear trail from first page to final feedback.";
+  resetGradeProgress();
+  updateReviewsLink();
+  window.scrollTo({top: 0, behavior: "smooth"});
+}
+
+for (const button of clearButtons) {
+  if (!button) continue;
+  button.addEventListener("click", () => {
+    if (busy) return;
+    if (!confirm("Clear this assessment and start a new one? Saved downloads are not affected.")) return;
+    clearAssessment();
+  });
+}
+
+reviewsLink.addEventListener("click", event => {
+  if (busy || !assessment || !storedAssessment()) event.preventDefault();
+});
+
+function restoreStoredAssessment() {
+  const stored = storedAssessment();
+  if (!stored || !stored.result) return;
+  assessment = stored;
+  steps.forEach((_, index) => updateStep(index, "done"));
+  status.textContent = "ASSESSMENT COMPLETE";
+  status.className = "live-pill complete";
+  const grades = stored.result.grades || [];
+  updateGradeProgress(grades.length, grades.length, "");
+  progress.textContent = "Assessment complete. Review any flagged answers before using these marks.";
+  updateReviewsLink();
+}
+
+restoreStoredAssessment();
+updateReviewsLink();

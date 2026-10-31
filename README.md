@@ -18,7 +18,7 @@ START -> ingest -> parse_spec -> clean_align -> grade_question -> aggregate -> r
 | Node | What it does |
 |---|---|
 | `ingest` | Reads UTF-8 text directly. Sends each complete PDF as a base64 file to OpenRouter's `file-parser` plugin with `mistral-ocr`; sends original images directly to the OpenRouter vision model. No local PDF parsing, page rendering, resizing, or image conversion. Preserves upload order and requests original page order within each document. |
-| `parse_spec` | Aligns question paper, optional rubric, and model answers into an internal `ExamSpec`. Supplied rubrics require explicit positive criterion allocations summing to each question total; missing or inconsistent allocations stop assessment before grading. Without a rubric, code creates one whole-question criterion using the model answer and the question's printed maximum marks, allowing proportional partial credit. Missing/invalid question totals still stop grading. |
+| `parse_spec` | Aligns question paper, optional rubric, and model answers into an internal `ExamSpec`. Explicit positive criterion allocations must sum to each question total; questions with no extracted allocations use one whole-question criterion based on the model answer and printed maximum marks, with a report warning. Partial or inconsistent allocations and missing/invalid question totals stop assessment before grading. |
 | `clean_align` | Builds `items`, a list of `{question_id, question, answer, model_answer, rubric, max_marks}` dictionaries. Student answers remain verbatim. Missing/duplicate/unknown mappings and ungrounded text stop assessment, rather than silently becoming zero marks. |
 | `grade_question` | Evaluates questions one by one in paper order, using each aligned dictionary as input. |
 | sub-graph | `grade` (per-criterion marks plus verbatim evidence quote) -> `verify` (code checks, then LLM critic) -> retry up to `MAX_GRADE_RETRIES` with the critique -> `finalize`. Unattempted questions skip the LLM. |
@@ -86,6 +86,9 @@ python app.py                                  # Web UI at http://127.0.0.1:8000
 python -m auto_assessment.cli --question-paper examples/question_paper.txt \
     --model-answers examples/model_answers.txt --answers examples/student_answer.txt
 
+# Run the example pipeline with node-by-node terminal logs:
+python run_pipeline.py
+
 # Optionally add explicit criterion allocations:
 python -m auto_assessment.cli --question-paper examples/question_paper.txt \
     --model-answers examples/model_answers.txt --rubric examples/rubric.txt \
@@ -101,14 +104,24 @@ python -m auto_assessment.cli --question-paper qp.pdf --rubric rubric.pdf \
 ```
 
 CLI saves `report.md`, `result.json`, aligned `questions.json`, and `transcript.txt` to `out/`.
-UI accepts uploaded model answers or pasted correct answers and downloads JSON and Markdown.
+`python run_pipeline.py` runs the example inputs and saves outputs to `out/pipeline-test/`.
+Pass CLI options to `run_pipeline.py` to run custom inputs. The graph logs each node's start,
+completion time, output field names, question/attempt where applicable, and failures to the terminal;
+student answers and model output are not included in logs.
+UI accepts uploaded model answers or pasted correct answers. The **Grade & verify** step shows a
+live per-question progress bar. Marks, criterion feedback, warnings, the transcript and JSON/Markdown
+downloads live on the review sheet. After an assessment finishes, **Show reviews** in the sidebar
+opens that review sheet (`/reviews`, above **How it works**) and stays disabled until a run
+completes. **Clear & start new** removes the stored run and resets the studio.
 The web UI uses Flask with plain HTML, CSS, and vanilla JavaScript; no Node.js, frontend build,
 external fonts, or animation libraries are needed. It includes live streamed progress,
-reorderable student pages, model settings, criterion feedback, review warnings, and transcript access.
+reorderable student pages and model settings; criterion feedback, review warnings and transcript
+access live on the review sheet.
 Animations respect reduced-motion preferences. Uploads are limited to 50 MB per request,
-stored temporarily, and removed after processing. Results stay in the browser until a reload;
-download reports before leaving. Closing the page interrupts the progress connection, not
-necessarily an in-flight model request. The server binds to loopback only; this unauthenticated
+stored temporarily, and removed after processing. Results stay in the browser tab
+(`sessionStorage`) across reloads and page switches until **Clear & start new** is used or the
+tab is closed; download reports before leaving. Closing the page interrupts the progress
+connection, not necessarily an in-flight model request. The server binds to loopback only; this unauthenticated
 local tool is not intended for public hosting. Add authentication and a production server before
 exposing it to a network.
 Question paper, model answers (upload or pasted text), and at least one student sheet are mandatory.

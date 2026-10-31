@@ -65,14 +65,23 @@ def run_assessment(*, question_paper=None, rubric=None, model_answers=None, mode
 
 def stream_assessment(*, question_paper=None, rubric=None, model_answers=None, model_answers_text=None,
                       answer_files, settings: Settings | None = None, tags=None) -> Iterator[dict]:
-    """Yields {'type': 'progress', 'node': ..., 'update': ...} then {'type': 'final', 'state': ..., 'run_id': ...}."""
+    """Yield progress events, then a final event.
+
+    Yields ``{'type': 'progress', 'node': ..., 'update': ...}`` per graph node,
+    ``{'type': 'question', 'completed': ..., 'total': ..., 'question_id': ...}``
+    while grading individual questions, then ``{'type': 'final', 'state': ..., 'run_id': ...}``.
+    """
     graph, inputs, config, run_id = _prepare(
         question_paper, rubric, model_answers, model_answers_text, answer_files, settings, tags)
     final: dict = {}
-    for mode, chunk in graph.stream(inputs, config, stream_mode=["updates", "values"]):
+    for mode, chunk in graph.stream(
+        inputs, config, stream_mode=["updates", "custom", "values"]
+    ):
         if mode == "updates":
             for node, update in chunk.items():
                 yield {"type": "progress", "node": node, "update": update}
+        elif mode == "custom":
+            yield {"type": "question", **chunk}
         else:
             final = chunk
     yield {"type": "final", "state": final, "run_id": str(run_id)}

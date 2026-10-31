@@ -6,6 +6,7 @@ import re
 
 from langchain_core.messages import HumanMessage, SystemMessage
 from langchain_core.runnables import RunnableConfig
+from langgraph.config import get_stream_writer
 
 from . import prompts as P
 from .config import Settings
@@ -37,6 +38,18 @@ def _criteria_text(question: Question) -> str:
     return "\n".join(
         f"- {criterion.name} ({criterion.max_marks} marks): {criterion.description}"
         for criterion in question.criteria
+    )
+
+
+def _whole_question_criterion(question: Question) -> Criterion:
+    return Criterion(
+        name="Whole question",
+        description=(
+            f"Evaluate correctness and completeness against this model answer: {question.model_answer}\n"
+            "Award proportional partial credit for correct content or valid alternative methods; "
+            "full marks require a complete correct answer."
+        ),
+        max_marks=question.max_marks,
     )
 
 
@@ -87,18 +100,20 @@ class ParseSpecNode:
         spec = self.llm.structured(ExamSpec, temperature=0).invoke(
             [SystemMessage(content=P.PARSE_SPEC_SYSTEM), HumanMessage(content=human)]
         )
+        warnings = []
         if not state.get("rubric"):
             for question in spec.questions:
-                question.criteria = [Criterion(
-                    name="Whole question",
-                    description=(
-                        f"Evaluate correctness and completeness against this model answer: {question.model_answer}\n"
-                        "Award proportional partial credit for correct content or valid alternative methods; "
-                        "full marks require a complete correct answer."
-                    ),
-                    max_marks=question.max_marks,
-                )]
-        spec, warnings = normalize_spec(spec)
+                question.criteria = [_whole_question_criterion(question)]
+        else:
+            for question in spec.questions:
+                if not question.criteria:
+                    question.criteria = [_whole_question_criterion(question)]
+                    warnings.append(
+                        f"Q{question.id}: the supplied rubric had no explicit criterion marks; "
+                        "graded against the model answer using the question's full mark total."
+                    )
+        spec, validation_warnings = normalize_spec(spec)
+        warnings.extend(validation_warnings)
         return {"spec": spec.model_dump(), "warnings": warnings}
 
 
@@ -153,12 +168,26 @@ class GradeQuestionsNode:
 
     def __call__(self, state: GraphState, config: RunnableConfig) -> dict:
         spec = ExamSpec.model_validate(state["spec"])
+        writer = get_stream_writer()
+        total = len(spec.questions)
         grades = []
-        for question, answer in zip(spec.questions, state["answers"]):
+        for index, (question, answer) in enumerate(
+            zip(spec.questions, state["answers"]), start=1
+        ):
+            writer({
+                "completed": index - 1,
+                "total": total,
+                "question_id": question.id,
+            })
             output = self.question_graph.invoke(
                 {"question": question.model_dump(), "answer": answer}, config
             )
             grades.append(output["grade"])
+            writer({
+                "completed": index,
+                "total": total,
+                "question_id": question.id,
+            })
         return {"grades": grades}
 
 

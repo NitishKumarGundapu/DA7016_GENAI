@@ -93,9 +93,9 @@ class FakeLLM:
         return Chain()
 
 
-def test_full_pipeline_and_streaming():
+def test_full_pipeline_and_streaming(caplog):
     for streaming in (False, True):
-        with tempfile.TemporaryDirectory(dir=os.environ["TMPDIR"]) as tmp:
+        with tempfile.TemporaryDirectory() as tmp:
             directory = Path(tmp)
             answer = directory / "student.txt"
             answer.write_text("जल जीवन है\nपृथ्वी गोल है", encoding="utf-8")
@@ -106,11 +106,18 @@ def test_full_pipeline_and_streaming():
                 if streaming:
                     events = list(stream_assessment(**kwargs))
                     state = events[-1]["state"]
-                    assert [e["node"] for e in events[:-1]] == [
+                    assert [e["node"] for e in events[:-1] if e["type"] == "progress"] == [
                         "ingest", "parse_spec", "clean_align", "grade_question", "aggregate", "report",
                     ]
+                    question_events = [e for e in events if e["type"] == "question"]
+                    assert question_events
+                    assert question_events[-1]["completed"] == question_events[-1]["total"] == 3
+                    assert [e["question_id"] for e in question_events] == ["1", "1", "2", "2", "3", "3"]
                 else:
                     state = run_assessment(**kwargs)
+            assert "Starting node=ingest" in caplog.text
+            assert "Finished node=report" in caplog.text
+            assert "Starting node=grade question=1 attempt=1" in caplog.text
             assert state["result"]["total"] == 2
             assert state["result"]["max_total"] == 6
             grades = state["result"]["grades"]
@@ -134,7 +141,7 @@ def test_full_pipeline_and_streaming():
 @pytest.mark.parametrize("streaming", [False, True])
 @pytest.mark.parametrize("inline", [False, True])
 def test_optional_rubric_uses_whole_question_criterion(streaming, inline):
-    with tempfile.TemporaryDirectory(dir=os.environ["TMPDIR"]) as tmp:
+    with tempfile.TemporaryDirectory() as tmp:
         directory = Path(tmp)
         inputs = reference_inputs(directory)
         inputs.pop("rubric")
@@ -165,6 +172,31 @@ def test_optional_rubric_uses_whole_question_criterion(streaming, inline):
         assert "RUBRIC:\n\n" in parse_call[1][-1].content
 
 
+def test_rubric_question_without_explicit_allocations_uses_reported_fallback():
+    with tempfile.TemporaryDirectory() as tmp:
+        directory = Path(tmp)
+        inputs = reference_inputs(directory)
+        answer = directory / "student.txt"
+        answer.write_text("जल जीवन है\nपृथ्वी गोल है", encoding="utf-8")
+        llm = FakeLLM()
+        llm.responses[ExamSpec][0].questions[0].criteria = []
+        llm.responses[GradeDraft][0].criterion_scores[0].criterion = "Whole question"
+        llm.responses[ReportFeedback][0].diagnostic_translations = [
+            "Q1: no explicit rubric allocation; graded against the model answer."
+        ]
+        with patch("auto_assessment.pipeline.create_llm", return_value=llm):
+            state = run_assessment(
+                **inputs, answer_files=[answer], settings=Settings(use_critic=True)
+            )
+        criterion = state["spec"]["questions"][0]["criteria"][0]
+        assert criterion["name"] == "Whole question"
+        assert criterion["max_marks"] == state["spec"]["questions"][0]["max_marks"]
+        assert state["result"]["warnings"] == [
+            "Q1: no explicit rubric allocation; graded against the model answer."
+        ]
+        assert "Q1: no explicit rubric allocation" in state["report_md"]
+
+
 @pytest.mark.parametrize("missing", ["question_paper", "model_answers", "answer_files"])
 @pytest.mark.parametrize("streaming", [False, True])
 def test_required_documents_stop_before_model_creation(missing, streaming):
@@ -181,7 +213,7 @@ def test_required_documents_stop_before_model_creation(missing, streaming):
 
 @pytest.mark.parametrize("max_marks", [0, float("nan")])
 def test_no_rubric_still_requires_valid_question_marks(max_marks):
-    with tempfile.TemporaryDirectory(dir=os.environ["TMPDIR"]) as tmp:
+    with tempfile.TemporaryDirectory() as tmp:
         directory = Path(tmp)
         inputs = reference_inputs(directory)
         inputs.pop("rubric")
@@ -196,7 +228,7 @@ def test_no_rubric_still_requires_valid_question_marks(max_marks):
 
 
 def test_four_sources_mixed_scans_and_inline_correct_answers():
-    with tempfile.TemporaryDirectory(dir=os.environ["TMPDIR"]) as tmp:
+    with tempfile.TemporaryDirectory() as tmp:
         directory = Path(tmp)
         question = directory / "paper.txt"
         question.write_text("प्रश्न 1\nप्रश्न 2\nप्रश्न 3", encoding="utf-8")
@@ -223,7 +255,7 @@ def test_four_sources_mixed_scans_and_inline_correct_answers():
 
 @pytest.mark.parametrize("extension", [".pdf", *IMAGE_MIME_TYPES])
 def test_documents_sent_unchanged_to_openrouter(extension):
-    with tempfile.TemporaryDirectory(dir=os.environ["TMPDIR"]) as tmp:
+    with tempfile.TemporaryDirectory() as tmp:
         path = Path(tmp) / f"document{extension}"
         raw = b"original-file-bytes"
         path.write_bytes(raw)
@@ -256,7 +288,7 @@ def test_documents_sent_unchanged_to_openrouter(extension):
 
 
 def test_text_read_without_ocr_and_custom_vision_model():
-    with tempfile.TemporaryDirectory(dir=os.environ["TMPDIR"]) as tmp:
+    with tempfile.TemporaryDirectory() as tmp:
         path = Path(tmp) / "paper.md"
         path.write_text("प्रश्न 1\n", encoding="utf-8")
         with patch("auto_assessment.ingest.requests.post") as post:
@@ -275,7 +307,7 @@ def test_text_read_without_ocr_and_custom_vision_model():
     {}, {"choices": []}, {"choices": [{"message": {}}]}, [],
 ])
 def test_ocr_rejects_api_errors_and_malformed_responses(body):
-    with tempfile.TemporaryDirectory(dir=os.environ["TMPDIR"]) as tmp:
+    with tempfile.TemporaryDirectory() as tmp:
         path = Path(tmp) / "paper.pdf"
         path.write_bytes(b"original-pdf")
         with patch.dict(os.environ, {"OPENROUTER_API_KEY": "test-key"}), \
@@ -289,7 +321,7 @@ def test_ocr_rejects_api_errors_and_malformed_responses(body):
     ("partial transcript", "length"), ("filtered", "content_filter"),
 ])
 def test_ocr_rejects_empty_or_incomplete_transcriptions(text, reason):
-    with tempfile.TemporaryDirectory(dir=os.environ["TMPDIR"]) as tmp:
+    with tempfile.TemporaryDirectory() as tmp:
         path = Path(tmp) / "paper.pdf"
         path.write_bytes(b"original-pdf")
         with patch.dict(os.environ, {"OPENROUTER_API_KEY": "test-key"}), \
@@ -299,7 +331,7 @@ def test_ocr_rejects_empty_or_incomplete_transcriptions(text, reason):
 
 
 def test_ocr_requires_key_and_rejects_unsupported_or_empty_files():
-    with tempfile.TemporaryDirectory(dir=os.environ["TMPDIR"]) as tmp:
+    with tempfile.TemporaryDirectory() as tmp:
         path = Path(tmp) / "paper.pdf"
         path.write_bytes(b"original-pdf")
         with patch.dict(os.environ, {"OPENROUTER_API_KEY": ""}), \
@@ -319,7 +351,7 @@ def test_ocr_requires_key_and_rejects_unsupported_or_empty_files():
 
 @pytest.mark.parametrize("error", [requests.Timeout("OCR timeout"), requests.HTTPError("OCR HTTP error")])
 def test_ocr_transport_errors_propagate(error):
-    with tempfile.TemporaryDirectory(dir=os.environ["TMPDIR"]) as tmp:
+    with tempfile.TemporaryDirectory() as tmp:
         path = Path(tmp) / "paper.pdf"
         path.write_bytes(b"original-pdf")
         with patch.dict(os.environ, {"OPENROUTER_API_KEY": "test-key"}), \
@@ -363,11 +395,11 @@ def test_bad_marks_stop_before_grading_and_bad_alignment_is_not_zero():
         llm = FakeLLM()
         paper = spec().model_dump()
         if invalid_rubric:
-            paper["questions"][0]["criteria"] = []
+            paper["questions"][0]["criteria"][0]["max_marks"] = 1
         else:
             llm.responses[Segmentation][0].answers.pop()
         llm.responses[ExamSpec] = [ExamSpec.model_validate(paper)]
-        with tempfile.TemporaryDirectory(dir=os.environ["TMPDIR"]) as tmp:
+        with tempfile.TemporaryDirectory() as tmp:
             answer = Path(tmp) / "student.txt"
             answer.write_text("जल जीवन है\nपृथ्वी गोल है", encoding="utf-8")
             with pytest.raises(ValueError):
@@ -397,7 +429,7 @@ def test_structured_grading_model_preserves_temperature():
 
 @pytest.mark.parametrize("extension", [".png", ".pdf"])
 def test_all_four_document_roles_use_openrouter_ocr(extension):
-    with tempfile.TemporaryDirectory(dir=os.environ["TMPDIR"]) as tmp:
+    with tempfile.TemporaryDirectory() as tmp:
         paths = [Path(tmp) / f"{role}{extension}" for role in ("paper", "rubric", "model", "student")]
         for path in paths:
             path.write_bytes(b"original-file-bytes")
@@ -416,7 +448,7 @@ def test_all_four_document_roles_use_openrouter_ocr(extension):
 
 
 def test_answer_can_span_pages_and_invalid_grading_retries():
-    with tempfile.TemporaryDirectory(dir=os.environ["TMPDIR"]) as tmp:
+    with tempfile.TemporaryDirectory() as tmp:
         pages = [Path(tmp) / f"page{i}.txt" for i in range(2)]
         pages[0].write_text("जल जीवन", encoding="utf-8")
         pages[1].write_text("है\nपृथ्वी गोल है", encoding="utf-8")
@@ -431,7 +463,7 @@ def test_answer_can_span_pages_and_invalid_grading_retries():
 
 
 def test_hallucinated_alignment_stops_instead_of_grading():
-    with tempfile.TemporaryDirectory(dir=os.environ["TMPDIR"]) as tmp:
+    with tempfile.TemporaryDirectory() as tmp:
         path = Path(tmp) / "student.txt"
         path.write_text("जल जीवन है\nपृथ्वी गोल है", encoding="utf-8")
         llm = FakeLLM()
@@ -443,7 +475,7 @@ def test_hallucinated_alignment_stops_instead_of_grading():
 
 
 def test_uncertain_transcription_is_unverified_and_diagnostics_are_localized():
-    with tempfile.TemporaryDirectory(dir=os.environ["TMPDIR"]) as tmp:
+    with tempfile.TemporaryDirectory() as tmp:
         path = Path(tmp) / "student.txt"
         path.write_text("जल जीवन है [?]\nपृथ्वी गोल है", encoding="utf-8")
         llm = FakeLLM()
@@ -463,7 +495,7 @@ def test_uncertain_transcription_is_unverified_and_diagnostics_are_localized():
 
 @pytest.mark.parametrize("with_rubric", [False, True])
 def test_cli_persists_report_aligned_dictionaries_and_marks(with_rubric):
-    with tempfile.TemporaryDirectory(dir=os.environ["TMPDIR"]) as tmp:
+    with tempfile.TemporaryDirectory() as tmp:
         directory = Path(tmp)
         inputs = reference_inputs(directory)
         student = directory / "student.txt"

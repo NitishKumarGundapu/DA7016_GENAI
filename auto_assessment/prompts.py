@@ -18,8 +18,9 @@ Alignment rules:
 - Clean OCR layout noise only; never invent missing question content or correct answers.
 - Preserve the rubric's scoring conditions, including partial-credit rules and valid alternatives.
 - Each criterion needs a unique name, its full scoring description and EXPLICITLY supplied marks.
-- If no rubric is supplied, return criteria=[]; the application will use one whole-question
-  criterion against the model answer, with the maximum marks printed on the question paper.
+- If no rubric is supplied, or a question has no explicit criterion allocations, return
+  criteria=[]; the application will use one whole-question criterion against the model answer,
+  with the maximum marks printed on the question paper, and report that fallback.
 - Never infer, split, distribute, rescale or repair marks. If criterion allocations are absent,
   return criteria=[] for that question. If maximum marks are absent, return max_marks=0.
   Leave contradictions intact: application validation must reject them before any grading.

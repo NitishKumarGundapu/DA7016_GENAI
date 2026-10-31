@@ -1,0 +1,40 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#153f38">
+  <title>Auto Assessment / Review sheet</title>
+  <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+  <script defer src="{{ url_for('static', filename='reviews.js') }}"></script>
+</head>
+<body class="review-sheet-page">
+  <a class="skip-link" href="#reviews-main">Skip to reviews</a>
+  <aside class="sidebar">
+    <a class="brand" href="/" aria-label="Auto Assessment home"><span class="brand-icon">a<span>✓</span></span><span>auto<span class="brand-light">assessment</span></span></a>
+    <div class="workspace-label">YOUR WORKSPACE</div>
+    <a class="nav-item" href="/"><span aria-hidden="true">▦</span> Assessment studio</a>
+    <a class="nav-item active" href="/reviews"><span aria-hidden="true">✓</span> Show reviews <span class="nav-dot"></span></a>
+    <a class="nav-item" href="/#pipeline"><span aria-hidden="true">≋</span> How it works</a>
+    <div class="sidebar-note"><span class="spark" aria-hidden="true">✧</span><h3>Less grading.<br>More teaching.</h3><p>Thoughtful feedback, grounded in your rubric.</p><span class="mini-tag">POWERED BY LANGGRAPH</span></div>
+    <div class="sidebar-footer"><span class="status-dot"></span> Local workspace <span>v1.0</span></div>
+  </aside>
+  <main id="reviews-main">
+    <header class="topbar"><span>Workspace <span class="slash">/</span> <strong>Review sheet</strong></span><span class="private-badge"><span aria-hidden="true">⌂</span> Local session</span></header>
+    <section class="page-heading review-page-heading"><div><div class="eyebrow"><span></span> EVERY MARK, EXPLAINED</div><h1>Review the evidence.<br><em>Trust the marks.</em></h1><p>Every criterion, quote and verification note<br>from your latest assessment.</p></div></section>
+    <p id="reviews-empty" class="panel review-empty" hidden>No assessment found in this browser tab.<br><a href="/">Start an assessment in the studio</a> and your review sheet will appear here.</p>
+    <div id="reviews-content" class="review-stack" hidden>
+      <section class="panel" aria-labelledby="review-questions-title">
+        <div class="panel-heading"><div><span class="section-number">01</span><h2 id="review-questions-title">Question reviews</h2></div><span class="subtle">Each score, evidence quote and explanation—clearly separated.</span></div>
+        <div id="review-cards"></div>
+      </section>
+      <section class="panel" aria-labelledby="review-files-title">
+        <div class="panel-heading"><div><span class="section-number">02</span><h2 id="review-files-title">Take it with you</h2></div><span class="subtle">Saved in this tab only.</span></div>
+        <div class="download-row"><button type="button" id="download-report">↓ Feedback report</button><button type="button" id="download-json">↓ Result JSON</button><a class="download-link" href="/">← Back to studio</a></div>
+        <details class="transcript"><summary>View original transcript</summary><pre id="review-transcript" dir="auto"></pre></details>
+      </section>
+    </div>
+    <footer class="page-footer"><span>Built for thoughtful educators.</span><span>AI assists. Your judgment leads.</span></footer>
+  </main>
+</body>
+</html>

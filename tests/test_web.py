@@ -34,6 +34,34 @@ def test_page_and_static_assets():
             assert client.get(path).status_code == 200
 
 
+def test_reviews_page_serves_review_sheet():
+    with app.test_client() as client:
+        page = client.get("/reviews")
+        assert page.status_code == 200
+        assert b"Review the evidence." in page.data
+        assert b"Show reviews" in page.data
+        assert "script-src 'self'" in page.headers["Content-Security-Policy"]
+        assert client.get("/static/reviews.js").status_code == 200
+
+
+def test_question_progress_events_are_forwarded():
+    def fake_stream(**kwargs):
+        yield {"type": "progress", "node": "clean_align"}
+        yield {"type": "question", "completed": 0, "total": 3, "question_id": "1"}
+        yield {"type": "question", "completed": 3, "total": 3, "question_id": "3"}
+        yield {
+            "type": "final", "run_id": "test-run",
+            "state": {"result": {"total": 1}, "report_md": "# Feedback",
+                      "transcript": "First page", "items": []},
+        }
+
+    with app.test_client() as client, patch("app.stream_assessment", side_effect=fake_stream):
+        response = client.post("/api/assess", data=materials(), buffered=True)
+    events = [json.loads(line) for line in response.data.splitlines()]
+    assert events[1] == {"type": "question", "completed": 0, "total": 3, "question_id": "1"}
+    assert events[2] == {"type": "question", "completed": 3, "total": 3, "question_id": "3"}
+
+
 def test_upload_stream_order_and_temporary_cleanup():
     saved_paths = []
 

@@ -40,6 +40,11 @@ def index():
     return render_template("index.html", settings=Settings.from_env())
 
 
+@app.get("/reviews")
+def reviews():
+    return render_template("reviews.html")
+
+
 def _settings(form):
     settings = Settings.from_env()
     settings.provider = form.get("provider", settings.provider)
@@ -112,6 +117,11 @@ def assess():
             ):
                 if event["type"] == "progress":
                     payload = {"type": "progress", "node": event["node"]}
+                elif event["type"] == "question":
+                    payload = {
+                        "type": "question", "completed": event["completed"],
+                        "total": event["total"], "question_id": event["question_id"],
+                    }
                 else:
                     state = event["state"]
                     payload = {
@@ -137,4 +147,4 @@ def assess():
 
 
 if __name__ == "__main__":
-    app.run(host="127.0.0.1", port=8000, debug=False)
+    app.run(host="127.0.0.1", port=8001, debug=False)
