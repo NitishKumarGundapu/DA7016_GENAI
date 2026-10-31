@@ -244,8 +244,6 @@ The CLI writes:
 ├── docs/                      Architecture diagram source (SVG)
 ├── templates/                 index.html, reviews.html, how_it_works.html
 ├── static/                    style.css, app.js, reviews.js, img/
-├── tests/                     Pipeline, web, review, and client tests
-├── evals/                     Evaluation dataset and evaluators
 ├── examples/                  Text, image, PDF, and multilingual sample inputs
 ├── Dockerfile
 ├── docker-compose.yml
