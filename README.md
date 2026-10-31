@@ -8,9 +8,9 @@ and actionable feedback. Grading is orchestrated with LangGraph, model calls use
 LangChain, and the web UI streams progress while the pipeline runs.
 
 
-![LangGraph architecture: top-level assessment pipeline and per-question subgraph](docs/langgraph-architecture.png)
+![LangGraph architecture: top-level assessment pipeline and per-question subgraph](static/img/langgraph-architecture.png)
 
-<sub>[Open the diagram full size](docs/langgraph-architecture.png)</sub>
+<sub>[Open the diagram full size](static/img/langgraph-architecture.png)</sub>
 
 ---
 
@@ -166,6 +166,7 @@ single run.
 4. Open **Show reviews** for the review sheet. Results live in the current browser
    tab (`sessionStorage`) until the tab is closed or **Clear & start new** is used.
 5. Download `report.md`, `result.json`, or `scores.csv`, or print the filtered list.
+6. Open **How it works** in the sidebar for a visual walkthrough of the pipeline.
 
 Uploads are limited to 50 MB per request. Supported formats: PDF, TXT, MD, PNG,
 JPEG, WebP, GIF.
@@ -240,9 +241,9 @@ The CLI writes:
 │   ├── schemas.py             Compatibility re-exports from models.py
 │   ├── state.py               Compatibility re-exports from models.py
 │   └── llm.py                 Compatibility alias for create_llm
-├── docs/                      LangGraph architecture diagram (SVG + PNG)
-├── templates/                 index.html (studio) and reviews.html (review sheet)
-├── static/                    style.css, app.js, reviews.js
+├── docs/                      Architecture diagram source (SVG)
+├── templates/                 index.html, reviews.html, how_it_works.html
+├── static/                    style.css, app.js, reviews.js, img/
 ├── tests/                     Pipeline, web, review, and client tests
 ├── evals/                     Evaluation dataset and evaluators
 ├── examples/                  Text, image, PDF, and multilingual sample inputs

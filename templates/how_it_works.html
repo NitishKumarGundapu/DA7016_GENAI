@@ -1,0 +1,103 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#153f38">
+  <title>Auto Assessment / How it works</title>
+  <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+</head>
+<body class="how-page">
+  <a class="skip-link" href="#how-main">Skip to content</a>
+  <aside class="sidebar">
+    <a class="brand" href="/" aria-label="Auto Assessment home"><span class="brand-icon">a<span>✓</span></span><span>auto<span class="brand-light">assessment</span></span></a>
+    <div class="workspace-label">YOUR WORKSPACE</div>
+    <a class="nav-item" href="/"><span aria-hidden="true">▦</span> Assessment studio</a>
+    <a class="nav-item active" href="/how-it-works"><span aria-hidden="true">≋</span> How it works <span class="nav-dot"></span></a>
+    <div class="sidebar-note"><span class="spark" aria-hidden="true">✧</span><h3>Less grading.<br>More teaching.</h3><p>Thoughtful feedback, grounded in your rubric.</p><span class="mini-tag">POWERED BY LANGGRAPH</span></div>
+    <div class="sidebar-footer"><span class="status-dot"></span> Local workspace <span>v1.0</span></div>
+  </aside>
+
+  <main id="how-main">
+    <header class="topbar"><span>Workspace <span class="slash">/</span> <strong>How it works</strong></span><span class="private-badge"><span aria-hidden="true">⌂</span> Local session</span></header>
+
+    <section class="page-heading how-page-heading">
+      <div>
+        <div class="eyebrow"><span></span> THE PIPELINE</div>
+        <h1>From answer sheets to <em>defensible feedback.</em></h1>
+        <p>Four inputs, one LangGraph workflow, and a review sheet built for human judgment.</p>
+      </div>
+    </section>
+
+    <div class="how-stack">
+      <section class="panel how-diagram" aria-labelledby="diagram-title">
+        <div class="panel-heading"><div><span class="section-number">01</span><h2 id="diagram-title">The graph at a glance</h2></div><span class="subtle">Top-level pipeline + per-question loop</span></div>
+        <figure>
+          <a class="how-diagram-open" href="{{ url_for('static', filename='img/langgraph-architecture.png') }}" target="_blank" rel="noopener">
+            <img src="{{ url_for('static', filename='img/langgraph-architecture.png') }}" alt="LangGraph architecture: ingest, parse_spec, clean_align, grade_question, aggregate, and report, plus the per-question grade, verify, retry, and finalize loop.">
+          </a>
+          <figcaption>Each question runs through its own grade, verify, and finalize subgraph. Failed checks retry; unresolved issues are flagged for review. <a href="{{ url_for('static', filename='img/langgraph-architecture.png') }}" target="_blank" rel="noopener">Open full size ↗</a></figcaption>
+        </figure>
+      </section>
+
+      <section class="panel" aria-labelledby="inputs-title">
+        <div class="panel-heading"><div><span class="section-number">02</span><h2 id="inputs-title">What you provide</h2></div><span class="subtle">Four inputs, one assessment</span></div>
+        <div class="how-inputs">
+          <article class="how-input"><h3>Question paper <span class="required">*</span></h3><p>The questions and their maximum marks. PDF, image, TXT, or MD.</p></article>
+          <article class="how-input"><h3>Model answers <span class="required">*</span></h3><p>One reference answer per question. Upload a file or paste the text.</p></article>
+          <article class="how-input"><h3>Student pages <span class="required">*</span></h3><p>One or more answer sheets. Reorder pages before grading so the transcript stays in order.</p></article>
+          <article class="how-input"><h3>Rubric <span class="optional">OPTIONAL</span></h3><p>Criterion names, descriptions, and explicit marks. Without it, each question is graded as a whole.</p></article>
+        </div>
+      </section>
+
+      <section class="panel" aria-labelledby="steps-title">
+        <div class="panel-heading"><div><span class="section-number">03</span><h2 id="steps-title">What happens inside</h2></div><span class="subtle">From first page to final feedback</span></div>
+        <div class="how-steps">
+          <article class="how-step"><span class="how-step-no">1</span><h3>Read the material</h3><p>Text is read directly. PDFs and images go to OpenRouter OCR, which preserves page order and turns diagrams, graphs, and tables into structured text.</p></article>
+          <article class="how-step"><span class="how-step-no">2</span><h3>Understand the standard</h3><p>The question paper, model answers, and optional rubric are aligned into one spec. Missing or contradictory mark allocations stop the run before grading.</p></article>
+          <article class="how-step"><span class="how-step-no">3</span><h3>Connect the answers</h3><p>The transcript is split into per-question answers. Missing, duplicated, contradictory, or ungrounded answers are withheld for human review.</p></article>
+          <article class="how-step"><span class="how-step-no">4</span><h3>Grade &amp; verify</h3><p>Each criterion needs a verbatim evidence quote. Code checks bounds and grounding, an optional critic reviews fairness, and failed checks retry.</p></article>
+          <article class="how-step"><span class="how-step-no">5</span><h3>Add it up</h3><p>Marks and percentages are calculated in code, never by the model. Every grade is ordered back into question-paper order.</p></article>
+          <article class="how-step"><span class="how-step-no">6</span><h3>Make feedback matter</h3><p>The report adds overall feedback and up to three study priorities in the paper's language, then renders Markdown for export.</p></article>
+        </div>
+      </section>
+
+      <div class="how-columns">
+        <section class="panel" aria-labelledby="safeguards-title">
+          <div class="panel-heading"><div><span class="section-number">04</span><h2 id="safeguards-title">Grading safeguards</h2></div><span class="subtle">Checks before marks</span></div>
+          <ul class="how-list">
+            <li>Every awarded criterion must quote the student's answer, and the quote is fuzzy-matched in code.</li>
+            <li>Marks are clamped to rubric bounds; totals and percentages are summed in code.</li>
+            <li>The critic checks for unearned credit and penalties for valid alternatives.</li>
+            <li>Unattempted questions score zero without an LLM call and remain in the paper total.</li>
+            <li>Uncertain transcription is flagged for review, never guessed or completed.</li>
+            <li>Questions that still fail verification are flagged in the report instead of silently accepted.</li>
+          </ul>
+        </section>
+
+        <section class="panel" aria-labelledby="outputs-title">
+          <div class="panel-heading"><div><span class="section-number">05</span><h2 id="outputs-title">What you get</h2></div><span class="subtle">Review, print, export</span></div>
+          <ul class="how-list">
+            <li>A review sheet with totals, overall feedback, study priorities, and warnings.</li>
+            <li>Search, filters, sorting, and jump links across every question.</li>
+            <li>Criterion evidence, strengths, gaps, and concrete next steps.</li>
+            <li>Markdown, JSON, and CSV downloads, plus print for the filtered list.</li>
+            <li>Results held in the browser tab until you clear them or close it.</li>
+          </ul>
+        </section>
+      </div>
+
+      <section class="panel how-cta" aria-labelledby="cta-title">
+        <div>
+          <div class="eyebrow"><span></span> READY WHEN YOU ARE</div>
+          <h2 id="cta-title">Put it to work.</h2>
+          <p>Bring a question paper, model answers, and a student's pages. The pipeline handles extraction, grading, verification, and feedback.</p>
+        </div>
+        <a class="primary-button how-start" href="/">Start an assessment <span aria-hidden="true">↗</span></a>
+      </section>
+    </div>
+
+    <footer class="page-footer"><span>Built for thoughtful educators.</span><span>AI assists. Your judgment leads.</span></footer>
+  </main>
+</body>
+</html>

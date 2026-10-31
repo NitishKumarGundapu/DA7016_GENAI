@@ -47,6 +47,17 @@ def test_reviews_page_serves_review_sheet():
             assert control in page.data
 
 
+def test_how_it_works_page_and_diagram():
+    with app.test_client() as client:
+        page = client.get("/how-it-works")
+        assert page.status_code == 200
+        assert b"From answer sheets to" in page.data
+        assert b"how-it-works" in page.data
+        assert client.get("/static/img/langgraph-architecture.png").status_code == 200
+        for path in ("/", "/reviews", "/how-it-works"):
+            assert b'href="/how-it-works"' in client.get(path).data
+
+
 def test_toy_pipeline_upload_contains_complete_review_data():
     from test_pipeline import FakeLLM
 

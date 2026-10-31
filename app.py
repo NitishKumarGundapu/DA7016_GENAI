@@ -63,6 +63,12 @@ def reviews():
     return render_template("reviews.html")
 
 
+@app.get("/how-it-works")
+def how_it_works():
+    """Explain the inputs, pipeline, safeguards, and outputs."""
+    return render_template("how_it_works.html")
+
+
 def _settings_from_form(form) -> Settings:
     """Merge model settings submitted by the form over environment defaults."""
     settings = Settings.from_env()
