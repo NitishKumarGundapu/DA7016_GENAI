@@ -1,153 +1,308 @@
-# Auto-Assessment: agentic grading of handwritten answer sheets
+# Auto-Assessment
 
-LangGraph (orchestration) + LangChain (grading models and structured output) + LangSmith (tracing and evals).
+Agentic grading for handwritten, scanned, and typed answer sheets.
 
-**Required input:** question paper (with maximum marks), model answers per question, student answer sheets
-**Optional input:** rubric with explicit criterion marks
-**Output:** marks per question + rubric-defensible, student-specific feedback (Markdown report + JSON)
+Auto-Assessment reads a question paper, model answers, optional marking rubric, and
+student answer sheets, then produces per-question marks, criterion-level evidence,
+and actionable feedback. Grading is orchestrated with LangGraph, model calls use
+LangChain, and the web UI streams progress while the pipeline runs.
 
-## Architecture
+> **Human review is part of the design.** The tool checks its own marks and flags
+> uncertain or unverifiable results, but it does not replace an examiner.
 
-```
-START -> ingest -> parse_spec -> clean_align -> grade_question -> aggregate -> report -> END
-                                               |
-                                               v (sequential, in question-paper order)
-                              grade -> verify -> [issues? retry with critique] -> finalize
-```
+![LangGraph architecture: top-level assessment pipeline and per-question subgraph](docs/langgraph-architecture.png)
 
-| Node | What it does |
+<sub>[Open the diagram full size](docs/langgraph-architecture.png)</sub>
+
+---
+
+## Key features
+
+- **Rubric-grounded grading.** Explicit criterion marks are enforced; the app never
+  invents or rescales allocations. Without a rubric, each question is graded as a
+  whole against its model answer.
+- **Verifiable marks.** Every awarded criterion must quote the student's answer
+  verbatim, and the quote is fuzzy-matched in code. Marks are clamped to rubric
+  bounds and totals are always computed by code.
+- **Independent verification.** Deterministic checks run first; an optional LLM
+  critic then reviews fairness and feedback specificity. Failed questions retry and
+  are flagged for human review instead of being silently accepted.
+- **Multilingual by default.** Source text and feedback keep the question paper's
+  language and script; report headings are localized too.
+- **Browser workflow.** Upload materials, watch per-question progress, then inspect
+  a review sheet with search, filters, sorting, and print/CSV/Markdown/JSON exports.
+- **Provider flexibility.** Grade with local Ollama or OpenRouter. PDF/image OCR is
+  always sent to OpenRouter (see [Document extraction](#document-extraction)).
+- **No frontend build step.** Flask plus plain HTML, CSS, and JavaScript.
+- **Docker-ready.** Single-stage `Dockerfile`, non-root runtime, healthcheck, and a
+  Compose file with loopback-only publishing.
+
+---
+
+## How it works
+
+| Stage | Responsibility |
 |---|---|
-| `ingest` | Reads UTF-8 text directly. Sends each complete PDF as a base64 file to OpenRouter's `file-parser` plugin with `mistral-ocr`; sends original images directly to the OpenRouter vision model. No local PDF parsing, page rendering, resizing, or image conversion. Preserves upload order and requests original page order within each document. |
-| `parse_spec` | Aligns question paper, optional rubric, and model answers into an internal `ExamSpec`. Explicit positive criterion allocations must sum to each question total; questions with no extracted allocations use one whole-question criterion based on the model answer and printed maximum marks, with a report warning. Partial or inconsistent allocations and missing/invalid question totals stop assessment before grading. |
-| `clean_align` | Builds `items`, a list of `{question_id, question, answer, model_answer, rubric, max_marks}` dictionaries. Student answers remain verbatim. Missing/duplicate mappings and ungrounded text skip only the affected question with withheld marks and a human-review flag, rather than stopping the whole assessment or silently becoming zero marks; unknown ids are ignored with a warning. |
-| `grade_question` | Evaluates questions one by one in paper order, using each aligned dictionary as input. A question flagged during alignment or whose grading raises is skipped with withheld marks and a review warning; the remaining questions still run. |
-| sub-graph | `grade` (per-criterion marks plus verbatim evidence quote) -> `verify` (code checks, then LLM critic) -> retry up to `MAX_GRADE_RETRIES` with the critique -> `finalize`. Unattempted questions skip the LLM. |
-| `aggregate` | Totals are computed in code, never by the LLM. |
-| `report` | Receives complete evaluations and review flags. Writes question-specific remarks, overall feedback and study priorities. Code renders awarded/maximum/withheld criterion marks, evidence and justifications; the LLM never computes totals. |
+| `ingest` | Read `.txt`/`.md` directly. Send each PDF/image unchanged to OpenRouter OCR/vision and preserve document order. |
+| `parse_spec` | Align the question paper, optional rubric, and model answers into an `ExamSpec`. Validates ids, marks, and criterion coverage. |
+| `clean_align` | Split the transcript into one verbatim answer per question. Missing, duplicated, contradictory, or ungrounded alignments are withheld for review. |
+| `grade_question` | Run the per-question sub-graph in paper order. Unattempted or failed questions are recorded without calling the model. |
+| `grade` | Propose criterion marks, verbatim evidence, strengths, gaps, and improvements. |
+| `verify` | Apply deterministic checks, then the optional LLM critic. Retry while issues remain. |
+| `finalize` | Clamp marks, drop ungrounded credit, and keep unresolved notes for the reviewer. |
+| `aggregate` | Sort grades into paper order and compute totals and percentages in code. |
+| `report` | Write localized overall feedback and render the Markdown report. |
 
-`auto_assessment/graph.py` assembles the top-level and per-question LangGraph workflows; `nodes.py` holds their callable node implementations, and `models.py` defines the Pydantic assessment models and dictionary-based graph state schemas. `schemas.py` and `state.py` retain compatibility imports.
+### Document extraction
 
-**Grading safeguards (not a replacement for human review)**
-- Every awarded criterion must quote the student verbatim, and the quote is fuzzy-matched against the answer in code.
-- Marks are clamped to rubric bounds and summed in code.
-- An LLM critic checks fairness (no credit for absent content, no penalty for valid alternatives) and feedback specificity.
-- Questions that never pass verification are flagged in the report, not silently accepted.
-- Uncertain handwriting is flagged for human review. Unattempted questions skip grading calls but remain in the report with zero marks and count towards the paper total.
-- Extracted text and quotes retain their language/script. Feedback follows each question's language; report headings and overall remarks follow the predominant paper language. Accuracy depends on the selected text and vision models.
-- Cleaning, evaluation, and report prompts live in [prompts.py](auto_assessment/prompts.py).
+- `.txt` / `.md` files and pasted model answers need no OCR.
+- PDFs are sent whole to OpenRouter's `file-parser` plugin using `mistral-ocr`.
+- Images (PNG, JPEG, WebP, GIF) are sent to the configured OpenRouter vision model.
+- There is no local PDF rendering, image conversion, or OCR fallback.
+- `OPENROUTER_API_KEY` is therefore required for any PDF or image upload, even when
+  grading with Ollama. OCR usage may incur OpenRouter charges.
+- Diagrams, graphs, and tables are converted to structured text during OCR; they are
+  graded from that text, not from image crops.
 
-## LLM clients (auto_assessment/llm_client.py)
-Separate `OllamaClient` and `OpenRouterClient` classes share the `LLMClient` interface for reference alignment, grading, verification, and reports:
-`llm.structured(Schema, temperature=...)`.
-`create_llm(settings)` selects the client using `LLM_PROVIDER`: `ollama` (default) or `openrouter`.
-Clients retain LangChain structured-output validation and tracing. `invoke(prompt)` returns a LangChain message, including provider-supplied usage metadata; per-call temperatures do not mutate the shared model.
-Existing `HybridLLM(settings)` calls remain supported through a compatibility alias in `llm.py`.
-PDF/image extraction always uses OpenRouter, regardless of the grading provider. There is no local OCR fallback.
+---
 
-## Document extraction
-- Set `OPENROUTER_API_KEY` for any PDF/image upload. Those files are sent to OpenRouter and its providers; OCR incurs API charges, including when grading uses Ollama.
-- `OPENROUTER_VISION_MODEL` defaults to `mistralai/mistral-small-3.1-24b-instruct` and is separate from the grading text model. The UI exposes it as **OpenRouter OCR / vision model**.
-- PDFs: send the entire original file using `type: file`, with `plugins: [{"id": "file-parser", "pdf": {"engine": "mistral-ocr"}}]`.
-- Images: send original PNG/JPEG/WebP/GIF bytes using `image_url`. No PDF plugin or local image processing. BMP/TIFF uploads are no longer supported; convert them to a supported format before uploading.
-- `.txt` / `.md` and pasted model answers need no OCR calls.
-- Empty documents, HTTP/API errors, malformed replies, and incomplete OCR output stop assessment explicitly.
-- Transcript boundaries use `=== DOCUMENT n ===`. State field `document_count` counts student files, not PDF pages; the pipeline no longer computes page counts locally.
-- Uncertain `[illegible]` / `[?]` markers remain review warnings. Transcription accuracy still requires human review.
+## Requirements
 
-## Setup
+- **Python 3.12** (the Docker image uses `python:3.12-slim`)
+- **OpenRouter API key** for PDF/image OCR and, optionally, OpenRouter grading
+- **Ollama** (optional) for fully local text grading
+- **Docker** (optional) for containerized deployment
+
+---
+
+## Quick start (local)
+
 ```bash
-python -m venv .venv && source .venv/bin/activate
+python3.12 -m venv .venv
+source .venv/bin/activate
 pip install -r requirements.txt
-# Set LLM_PROVIDER=ollama or LLM_PROVIDER=openrouter in .env.
-# Set OPENROUTER_API_KEY for PDF/image OCR and for OpenRouter grading.
-# OPENROUTER_VISION_MODEL=mistralai/mistral-small-3.1-24b-instruct
-# Optionally add LANGSMITH_TRACING=true and LANGSMITH_API_KEY for tracing.
-# for local models:
+
+cp .env.example .env
+# Edit .env: set LLM_PROVIDER and OPENROUTER_API_KEY as needed.
+```
+
+For local Ollama grading:
+
+```bash
 ollama pull qwen2.5:14b
+python app.py
 ```
 
-## Check OpenRouter access and pricing
-Set `OPENROUTER_API_KEY` in `.env`, then list models available to that key with
-input/output prices per one million tokens:
-```bash
-python openrouter_models.py
-python openrouter_models.py --search llama
-python openrouter_models.py --model openai/gpt-4o --prompt "Say hello in one sentence."
+Open <http://127.0.0.1:8001>. The Flask app binds to loopback only by default.
+
+For OpenRouter grading, set these in `.env`:
+
+```dotenv
+LLM_PROVIDER=openrouter
+OPENROUTER_API_KEY=sk-or-...
 ```
-The model list comes from OpenRouter's account-specific models endpoint. A model being
-listed does not necessarily mean requests will succeed if the account has no remaining
-credits or the model has other provider-specific requirements.
 
-## Run
+---
+
+## Docker
+
 ```bash
-python app.py                                  # Web UI at http://127.0.0.1:8000
+docker compose up -d --build
+docker compose logs -f
+open http://127.0.0.1:8001
+docker compose down
+```
 
-# CLI, no scans or rubric needed:
-python -m auto_assessment.cli --question-paper examples/question_paper.txt \
-    --model-answers examples/model_answers.txt --answers examples/student_answer.txt
+The Compose file:
 
-# Run the example pipeline with node-by-node terminal logs:
+- publishes the app on `127.0.0.1:8001` only, because the UI has no authentication;
+- passes `.env` values into the container;
+- maps `host.docker.internal` so the container can reach Ollama on the host;
+- stores uploads in a size-limited `/tmp` tmpfs and removes them after each run.
+
+If Ollama runs in another Compose service, set its service URL instead of the host
+gateway, for example:
+
+```bash
+DOCKER_OLLAMA_BASE_URL=http://ollama:11434 docker compose up -d --build
+```
+
+To run tests inside the built image:
+
+```bash
+docker compose run --rm app python -m pytest -q
+```
+
+---
+
+## Configuration
+
+Settings are read from environment variables or a local `.env` file. See
+[`.env.example`](.env.example).
+
+| Variable | Default | Purpose |
+|---|---|---|
+| `LLM_PROVIDER` | `ollama` | Text provider: `ollama` or `openrouter`. |
+| `OPENROUTER_API_KEY` | — | Required for PDF/image OCR and OpenRouter grading. |
+| `OPENROUTER_MODEL` | `openai/gpt-4o` | Text model used when `LLM_PROVIDER=openrouter`. |
+| `OPENROUTER_VISION_MODEL` | `mistralai/mistral-small-3.1-24b-instruct` | OCR/vision model for PDFs and images. |
+| `OLLAMA_BASE_URL` | `http://localhost:11434` | Local Ollama endpoint. |
+| `OLLAMA_MODEL` | `qwen2.5:14b` | Local text model. |
+| `OLLAMA_NUM_CTX` | `8192` | Ollama context window. |
+| `USE_CRITIC` | `true` | Run the LLM critic after deterministic checks. |
+| `MAX_GRADE_RETRIES` | `2` | Retry budget for a question that fails verification. |
+| `EXTRACTION_REASONING` | `false` | Enable model reasoning for extraction/alignment calls. |
+
+The web form can override the provider, models, retry count, and critic toggle for a
+single run.
+
+---
+
+## Usage
+
+### Web UI
+
+1. Upload a question paper, optional rubric, model answers (file or pasted text), and
+   one or more student answer sheets.
+2. Choose the provider and verification settings, then start the assessment.
+3. Follow the **Grade & verify** progress bar; uploads are deleted when the run ends.
+4. Open **Show reviews** for the review sheet. Results live in the current browser
+   tab (`sessionStorage`) until the tab is closed or **Clear & start new** is used.
+5. Download `report.md`, `result.json`, or `scores.csv`, or print the filtered list.
+
+Uploads are limited to 50 MB per request. Supported formats: PDF, TXT, MD, PNG,
+JPEG, WebP, GIF.
+
+### CLI
+
+```bash
+python -m auto_assessment.cli \
+    --question-paper examples/example_0_texts/question_paper.txt \
+    --model-answers examples/example_0_texts/model_answers.txt \
+    --rubric examples/example_0_texts/rubric.txt \
+    --answers examples/example_0_texts/student_answer.txt
+```
+
+Pass `--no-critic` to skip the second-opinion model, `--provider` to override the
+provider, and `--out DIR` to change the output directory.
+
+### Bundled example
+
+```bash
 python run_pipeline.py
-
-# Optionally add explicit criterion allocations:
-python -m auto_assessment.cli --question-paper examples/question_paper.txt \
-    --model-answers examples/model_answers.txt --rubric examples/rubric.txt \
-    --answers examples/student_answer.txt
-
-# CLI with real scans:
-python -m auto_assessment.cli --question-paper qp.pdf --rubric rubric.pdf \
-    --model-answers model.pdf --answers page1.jpg page2.jpg page3.jpg
-
-# Inline correct answers instead of a model-answer file:
-python -m auto_assessment.cli --question-paper qp.pdf --rubric rubric.pdf \
-    --model-answers-text "1. Correct answer ... 2. Correct answer ..." --answers student.pdf
 ```
 
-CLI saves `report.md`, `result.json`, aligned `questions.json`, and `transcript.txt` to `out/`.
-`python run_pipeline.py` runs the example inputs and saves outputs to `out/pipeline-test/`.
-Pass CLI options to `run_pipeline.py` to run custom inputs. The graph logs each node's start,
-completion time, output field names, question/attempt where applicable, and failures to the terminal;
-student answers and model output are not included in logs.
-UI accepts uploaded model answers or pasted correct answers. The **Grade & verify** step shows a
-live per-question progress bar. Marks, criterion feedback, warnings, the transcript and JSON/Markdown
-downloads live on the review sheet. After an assessment finishes, **Show reviews** in the sidebar
-opens that review sheet (`/reviews`, above **How it works**) and stays disabled until a run
-completes. **Clear & start new** removes the stored run and resets the studio.
-The review sheet starts with total marks, percentage, attempt counts, human-review counts,
-overall feedback, study priorities and assessment warnings. Search questions, student/model
-answers, rubric criteria and feedback; filter by verification, unattempted answers or withheld
-marks. Default order follows the question paper; optional sorts use natural question numbers,
-human-review priority, withheld marks or score percentage. Jump links open question details,
-with student/reference answers side by side, actionable feedback and criterion evidence.
-Expand/collapse affects shown questions. **Print shown reviews** includes expanded details for
-the current filtered list; **All scores CSV**, Markdown and JSON downloads always include the
-complete result. CSV exports quote text and neutralize spreadsheet formulas.
-The web UI uses Flask with plain HTML, CSS, and vanilla JavaScript; no Node.js, frontend build,
-external fonts, or animation libraries are needed. It includes live streamed progress,
-reorderable student pages and model settings; criterion feedback, review warnings and transcript
-access live on the review sheet.
-Animations respect reduced-motion preferences. Uploads are limited to 50 MB per request,
-stored temporarily, and removed after processing. Results stay in the browser tab
-(`sessionStorage`) across reloads and page switches until **Clear & start new** is used or the
-tab is closed; download reports before leaving. Closing the page interrupts the progress
-connection, not necessarily an in-flight model request. The server binds to loopback only; this unauthenticated
-local tool is not intended for public hosting. Add authentication and a production server before
-exposing it to a network.
-Question paper, model answers (upload or pasted text), and at least one student sheet are mandatory.
-Rubric is optional; when supplied, every criterion must have explicit marks.
-Without a rubric, the system grades each question as a whole; it does not invent detailed marking allocations.
-Structured JSON spec input is no longer supported.
+This runs the `examples/example_0_texts` files and writes to
+`out/pipeline-test/`.
 
-## LangSmith
-- Set `LANGSMITH_TRACING=true`, `LANGSMITH_API_KEY`, `LANGSMITH_PROJECT`. Every run is traced end to end: node, per-question sub-graph, retries, LLM calls, with tags and metadata (provider, models).
-- Evals: `python evals/run_eval.py` creates a dataset from `evals/dataset.json` and scores marks-in-bounds, total consistency, evidence grounding, verification rate, agreement with human marks, and LLM-judged feedback quality.
-- Offline pipeline checks (no API needed): `python -m pytest tests/test_pipeline.py`
-- Toy upload-to-review pipeline check: `python -m pytest tests/test_web.py -k toy_pipeline`
-- Review sorting/search/export checks (optional Node.js, no packages): `node --test tests/test_reviews.js`
+### Output files
 
-## Notes
-- Extraction calls (`parse_spec`, `clean_align`, and PDF/image OCR) disable model reasoning by default for faster, cheaper, more literal output. Set `EXTRACTION_REASONING=true` to enable reasoning for those calls; grading, critic verification, and report generation are unaffected.
-- Handwriting accuracy is the main risk. Ollama grading is fully local only with text inputs; PDF/image OCR always uses OpenRouter.
-- Diagrams, graphs and tables in images and scanned PDFs are converted into detailed structured text during OCR and graded from that text. For PDFs, `mistral-ocr` forwards up to 8 extracted images per PDF to the vision model; any beyond that limit may only appear as parsed text. There is still no per-question image crop or visual re-check during grading.
-- All document roles accept text/scanned PDFs, `.txt`, `.md`, or PNG/JPEG/WebP/GIF images. Reference correct answers may also be pasted as text.
-- Ollama context defaults are small, so `OLLAMA_NUM_CTX=8192` is set.
+The CLI writes:
+
+| File | Contents |
+|---|---|
+| `report.md` | Localized, student-facing report. |
+| `result.json` | Final result: totals, grades, criterion scores, warnings. |
+| `questions.json` | Aligned question/answer dictionaries used for grading. |
+| `transcript.txt` | Extracted student transcript. |
+
+### Behaviour notes
+
+- `python run_pipeline.py` writes the bundled example to `out/pipeline-test/`.
+- Node logs show timings, output fields, question/attempt, and failures; student
+  answers and model output are never logged.
+- Review search, filters, sorting, jump links, expand/collapse, and print follow the
+  filtered list; CSV, Markdown, and JSON exports always include every question.
+- Required inputs: question paper, model answers (upload or pasted), and at least one
+  answer sheet. The rubric is optional but supplied criteria need explicit marks;
+  structured JSON spec input is unsupported.
+- Results stay in the browser tab until cleared or closed. The server is
+  loopback-only and unauthenticated; uploads are removed after processing.
+
+---
+
+## Project structure
+
+```text
+.
+├── app.py                     Flask UI, upload validation, NDJSON streaming endpoint
+├── run_pipeline.py            Runs the bundled example or forwards CLI arguments
+├── auto_assessment/
+│   ├── __init__.py            Public package exports
+│   ├── config.py              Environment-backed Settings
+│   ├── cli.py                 argparse CLI and artifact writer
+│   ├── pipeline.py            Blocking and streaming public entry points
+│   ├── graph.py               LangGraph workflow assembly and routing
+│   ├── nodes.py               Top-level and per-question graph nodes
+│   ├── models.py              Pydantic LLM schemas and graph state types
+│   ├── prompts.py             All model prompts in one place
+│   ├── ingest.py              Text reading and OpenRouter OCR/vision calls
+│   ├── llm_client.py          Ollama/OpenRouter LangChain clients
+│   ├── verify.py              Deterministic mark, evidence, and spec checks
+│   ├── report.py              Markdown report renderer
+│   ├── schemas.py             Compatibility re-exports from models.py
+│   ├── state.py               Compatibility re-exports from models.py
+│   └── llm.py                 Compatibility alias for create_llm
+├── docs/                      LangGraph architecture diagram (SVG + PNG)
+├── templates/                 index.html (studio) and reviews.html (review sheet)
+├── static/                    style.css, app.js, reviews.js
+├── tests/                     Pipeline, web, review, and client tests
+├── evals/                     Evaluation dataset and evaluators
+├── examples/                  Text, image, PDF, and multilingual sample inputs
+├── Dockerfile
+├── docker-compose.yml
+└── requirements.txt
+```
+
+---
+
+## Grading safeguards
+
+- Every awarded criterion requires a verbatim evidence quote that is fuzzy-matched
+  against the student's answer.
+- Marks are clamped to rubric bounds; totals and percentages are summed in code.
+- The optional critic checks for credit without evidence and penalties for valid
+  alternative answers.
+- Questions that fail verification after retries are flagged in the UI and report.
+- Unattempted questions receive zero marks without an LLM call and remain in the
+  paper total.
+- Uncertain transcription markers (`[illegible]`, `[?]`) trigger human review.
+- The report model receives diagnostics and must translate every one; otherwise the
+  run fails rather than hiding warnings. The report model never changes marks.
+
+---
+
+## Tests and evaluation
+
+```bash
+# Offline pipeline and web tests (model calls are mocked)
+python -m pytest -q
+
+# Review-sheet search/filter/export tests (optional; uses Node's built-in runner)
+node --test tests/test_reviews.js
+
+# Evaluation (requires real model access)
+python evals/run_eval.py
+```
+
+`evals/run_eval.py` scores marks-in-bounds, total consistency, evidence grounding,
+verification rate, agreement with human marks, and LLM-judged feedback quality. See
+the module docstring for the dataset format.
+
+---
+
+## Limitations and security
+
+- **Handwriting accuracy is the main risk.** OCR and grading can be wrong; review
+  flagged questions before using marks.
+- **OCR requires network access.** PDFs and images are sent to OpenRouter, even for
+  local Ollama grading; there is no offline OCR path.
+- **No authentication.** `python app.py` binds to `127.0.0.1`, and the Compose file
+  publishes to loopback only. Add authentication and TLS before exposing the app to
+  a network.
+- **No server-side persistence.** Web results live in the browser tab; download the
+  report before closing it.
+- **Diagrams and tables are graded as OCR text.** There is no per-question visual
+  re-check.
+- **Provider behavior varies.** Model availability, pricing, and output quality
+  depend on the selected Ollama or OpenRouter model.
