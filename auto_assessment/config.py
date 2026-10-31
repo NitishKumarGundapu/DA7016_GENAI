@@ -27,6 +27,7 @@ class Settings:
     grader_temperature: float = 0.0
     use_critic: bool = True
     max_grade_retries: int = 2
+    extraction_reasoning: bool = False
 
     @classmethod
     def from_env(cls) -> "Settings":
@@ -42,4 +43,5 @@ class Settings:
             ollama_num_ctx=int(os.getenv("OLLAMA_NUM_CTX", d.ollama_num_ctx)),
             use_critic=_env_bool("USE_CRITIC", d.use_critic),
             max_grade_retries=int(os.getenv("MAX_GRADE_RETRIES", d.max_grade_retries)),
+            extraction_reasoning=_env_bool("EXTRACTION_REASONING", d.extraction_reasoning),
         )

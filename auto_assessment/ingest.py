@@ -48,19 +48,28 @@ def extract_document(path: str, settings: Settings) -> str:
             "messages": [
                 {"role": "system", "content": TRANSCRIBE_SYSTEM},
                 {"role": "user", "content": [
-                    {"type": "text", "text": "Extract all text accurately, in original page order. Return only the transcription."},
+                    {"type": "text", "text": (
+                        "Extract all text accurately, in original page order. Return only the "
+                        "transcription. Convert diagrams, graphs and tables into detailed "
+                        "structured text. Omit crossed-out/struck-through text and cut-off, "
+                        "cropped or partial fragments as described above; never guess or "
+                        "reconstruct them."
+                    )},
                     attachment,
                 ]},
             ],
         }
+        payload["reasoning"] = {"enabled": settings.extraction_reasoning}
         if ext == ".pdf":
             payload["plugins"] = [{"id": "file-parser", "pdf": {"engine": "mistral-ocr"}}]
+        
         response = requests.post(
             "https://openrouter.ai/api/v1/chat/completions",
             headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
             json=payload,
             timeout=(10, 180),
         )
+        
         response.raise_for_status()
         result = response.json()
         if not isinstance(result, dict):

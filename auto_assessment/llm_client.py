@@ -22,19 +22,32 @@ class LLMClient:
         self.settings = settings
         self.model = model
 
-    def chat(self, temperature: float | None = None) -> BaseChatModel:
+    def chat(
+        self, temperature: float | None = None, *, reasoning: bool | None = None,
+    ) -> BaseChatModel:
         temperature = self.settings.grader_temperature if temperature is None else temperature
-        return self.model.model_copy(update={"temperature": temperature})
+        model = self.model.model_copy(update={"temperature": temperature})
+        if reasoning is None:
+            return model
+        if self.settings.provider == "ollama":
+            return model.model_copy(update={"reasoning": reasoning})
+        body = dict(model.extra_body or {})
+        body["reasoning"] = {"enabled": reasoning}
+        return model.model_copy(update={"extra_body": body})
 
     def invoke(
         self, prompt: LanguageModelInput, *, temperature: float | None = None,
+        reasoning: bool | None = None,
     ) -> BaseMessage:
-        return self.chat(temperature=temperature).invoke(prompt)
+        return self.chat(temperature=temperature, reasoning=reasoning).invoke(prompt)
 
     def structured(
         self, schema: type[BaseModel], *, temperature: float | None = None,
+        reasoning: bool | None = None,
     ) -> Runnable:
-        return self.chat(temperature=temperature).with_structured_output(schema)
+        return self.chat(
+            temperature=temperature, reasoning=reasoning
+        ).with_structured_output(schema)
 
     def describe(self) -> dict[str, str]:
         return {

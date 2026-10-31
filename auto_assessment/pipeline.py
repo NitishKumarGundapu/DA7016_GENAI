@@ -47,6 +47,7 @@ def _prepare(question_paper, rubric, model_answers, model_answers_text, answer_f
             "llm": llm.describe(),
             "critic": settings.use_critic,
             "max_grade_retries": settings.max_grade_retries,
+            "extraction_reasoning": settings.extraction_reasoning,
             "n_answer_files": len(answer_files),
         },
         "recursion_limit": max(25, 2 * settings.max_grade_retries + 10),

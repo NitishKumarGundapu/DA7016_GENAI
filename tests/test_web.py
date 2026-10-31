@@ -42,6 +42,36 @@ def test_reviews_page_serves_review_sheet():
         assert b"Show reviews" in page.data
         assert "script-src 'self'" in page.headers["Content-Security-Policy"]
         assert client.get("/static/reviews.js").status_code == 200
+        for control in (b"review-search", b"review-filter", b"review-sort", b"review-stats",
+                        b"review-priorities", b"review-warnings", b"download-csv", b"print-reviews"):
+            assert control in page.data
+
+
+def test_toy_pipeline_upload_contains_complete_review_data():
+    from test_pipeline import FakeLLM
+
+    data = {
+        "question_paper": (io.BytesIO("प्रश्न 1 (2 अंक)\nप्रश्न 2 (2 अंक)\nप्रश्न 3 (2 अंक)".encode()), "paper.txt"),
+        "rubric": (io.BytesIO("ज्ञान: सही विचार, 2 अंक प्रति प्रश्न".encode()), "rubric.txt"),
+        "model_answers_text": "1. सही उत्तर\n2. सही उत्तर\n3. सही उत्तर",
+        "answer_files": (io.BytesIO("जल जीवन है\nपृथ्वी गोल है".encode()), "student.txt"),
+        "provider": "ollama", "use_critic": "on",
+    }
+    with app.test_client() as client, patch("auto_assessment.pipeline.create_llm", return_value=FakeLLM()):
+        response = client.post("/api/assess", data=data, buffered=True)
+    events = [json.loads(line) for line in response.data.splitlines()]
+    final = events[-1]
+    assert final["type"] == "final"
+    assert final["result"]["total"] == 2
+    assert final["result"]["max_total"] == 6
+    assert final["result"]["overall"]["summary"]
+    assert final["result"]["overall"]["top_priorities"]
+    assert "warnings" in final["result"]
+    assert [item["question_id"] for item in final["items"]] == ["1", "2", "3"]
+    assert final["items"][0]["answer"] == "जल जीवन है"
+    assert final["items"][0]["model_answer"] == "सही उत्तर"
+    assert not final["result"]["grades"][1]["attempted"]
+    assert final["result"]["grades"][0]["criterion_scores"][0]["marks_withheld"] == 1
 
 
 def test_question_progress_events_are_forwarded():

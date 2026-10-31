@@ -107,8 +107,12 @@ def build_graph(llm: LLMClient, settings: Settings):
     question_graph = build_question_graph(llm, settings)
     workflow = StateGraph(GraphState)
     workflow.add_node("ingest", _logged_node("ingest", IngestNode(settings)))
-    workflow.add_node("parse_spec", _logged_node("parse_spec", ParseSpecNode(llm)))
-    workflow.add_node("clean_align", _logged_node("clean_align", CleanAlignNode(llm)))
+    workflow.add_node(
+        "parse_spec", _logged_node("parse_spec", ParseSpecNode(llm, settings))
+    )
+    workflow.add_node(
+        "clean_align", _logged_node("clean_align", CleanAlignNode(llm, settings))
+    )
     workflow.add_node(
         "grade_question",
         _logged_node(

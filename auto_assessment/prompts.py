@@ -45,9 +45,18 @@ Rules:
 - Do NOT correct spelling, grammar, or wrong facts. Do NOT complete unfinished sentences.
 - Do NOT answer the questions yourself.
 - Unreadable word -> [illegible]. Uncertain word -> best guess followed by [?].
-- Crossed-out text -> omit it, unless it is the only attempt (then write [struck: ...]).
+- Crossed-out or struck-through text -> omit it entirely, unless it is the only attempt
+  (then write [struck: ...]).
+- Cut-off, cropped or partial words/lines at page edges, folds or scan boundaries -> omit them;
+  never guess, complete or reconstruct the missing text.
 - Math/equations: write in plain text or LaTeX-like notation.
-- Diagrams/graphs/tables: describe briefly in square brackets, e.g. [diagram: labelled neural net, 3 layers]."""
+- Diagrams/graphs/tables/figures: do NOT skip them. Convert each into detailed structured text at
+  the position it appears, wrapped in square brackets: [diagram: ...], [graph: ...], [table: ...].
+  - Diagram/figure: type, title, labelled parts, arrows/connections and relationships.
+  - Graph: axis labels, units, scales, plotted series, key values, trends and annotations.
+  - Table: every header and cell value, in row order.
+  Describe only what is visibly shown; never infer, estimate or add data that is not printed."""
+
 TRANSCRIBE_SYSTEM += "\nFor reference documents, preserve all marking allocations and rubric conditions.\n" + LANGUAGE_RULES
 
 
@@ -58,6 +67,8 @@ For EACH question id given, return the student's answer copied verbatim from the
 (answers can continue across pages; keep the original wording, do not summarise or fix it).
 If the student did not attempt a question, set attempted=false and answer_text="".
 Return exactly one entry per question id, using the ids exactly as provided."""
+
+
 SEGMENT_SYSTEM += """
 Match by printed labels and question context, never by position alone. Keep answers in their
 original language, including mixed-language answers. Do not copy model answers into student answers.

@@ -20,17 +20,34 @@
     <div class="sidebar-footer"><span class="status-dot"></span> Local workspace <span>v1.0</span></div>
   </aside>
   <main id="reviews-main">
-    <header class="topbar"><span>Workspace <span class="slash">/</span> <strong>Review sheet</strong></span><span class="private-badge"><span aria-hidden="true">⌂</span> Local session</span></header>
-    <section class="page-heading review-page-heading"><div><div class="eyebrow"><span></span> EVERY MARK, EXPLAINED</div><h1>Review the evidence.<br><em>Trust the marks.</em></h1><p>Every criterion, quote and verification note<br>from your latest assessment.</p></div></section>
+    <header class="topbar"><a href="/">← Assessment studio</a><span class="private-badge">Saved in this tab only</span></header>
+    <section class="page-heading review-page-heading"><div><div class="eyebrow"><span></span> ASSESSMENT REVIEW</div><h1>Review the evidence.</h1><p>Start with the overview, then compare answers and inspect each mark.</p></div></section>
+    <p id="review-error" class="review-alert" role="alert" hidden></p>
     <p id="reviews-empty" class="panel review-empty" hidden>No assessment found in this browser tab.<br><a href="/">Start an assessment in the studio</a> and your review sheet will appear here.</p>
     <div id="reviews-content" class="review-stack" hidden>
-      <section class="panel" aria-labelledby="review-questions-title">
-        <div class="panel-heading"><div><span class="section-number">01</span><h2 id="review-questions-title">Question reviews</h2></div><span class="subtle">Each score, evidence quote and explanation—clearly separated.</span></div>
-        <div id="review-cards"></div>
+      <section class="panel review-overview" aria-labelledby="review-title">
+        <div class="review-score-head"><div><h2 id="review-title"></h2><p id="review-saved" class="review-meta"></p></div><span class="review-tag">AI assessment · Educator review required</span></div>
+        <div id="review-stats" class="review-stats"></div>
+        <div class="review-overall"><div><h3>Overall feedback</h3><p id="review-summary" dir="auto"></p></div><div><h3>Study priorities</h3><ol id="review-priorities" dir="auto"></ol></div></div>
+        <div id="review-warnings" class="review-alert" hidden><h3>Assessment warnings</h3><ul id="review-warning-list" dir="auto"></ul></div>
       </section>
-      <section class="panel" aria-labelledby="review-files-title">
+      <div class="review-workspace">
+        <nav class="panel review-navigation" aria-labelledby="question-nav-title"><h2 id="question-nav-title">Jump to question</h2><p class="review-meta">Matches current filters and order.</p><div id="review-question-nav"></div></nav>
+        <section class="panel review-questions" aria-labelledby="review-questions-title">
+          <div class="panel-heading"><h2 id="review-questions-title">Question reviews</h2><span id="review-count" class="review-meta" role="status" aria-live="polite"></span></div>
+          <div class="review-toolbar">
+            <label class="review-search">Search reviews<input id="review-search" type="search" placeholder="Question, answer, criterion or feedback"></label>
+            <label>Show<select id="review-filter"><option value="all">All questions</option><option value="needs-review">Needs human review</option><option value="unattempted">Not attempted</option><option value="verified">Verification passed</option><option value="lost-marks">Marks withheld</option></select></label>
+            <label>Sort by<select id="review-sort"><option value="paper">Question-paper order</option><option value="question">Question number</option><option value="needs-review">Human review first</option><option value="withheld">Most marks withheld</option><option value="lowest">Lowest score (%)</option><option value="highest">Highest score (%)</option></select></label>
+          </div>
+          <div class="review-list-actions"><button type="button" id="expand-reviews">Expand shown</button><button type="button" id="collapse-reviews">Collapse shown</button><button type="button" id="reset-reviews">Reset filters</button></div>
+          <div id="review-cards"></div>
+          <p id="review-no-matches" class="review-empty" hidden>No questions match. Try another search or reset filters.</p>
+        </section>
+      </div>
+      <section class="panel review-export" aria-labelledby="review-files-title">
         <div class="panel-heading"><div><span class="section-number">02</span><h2 id="review-files-title">Take it with you</h2></div><span class="subtle">Saved in this tab only.</span></div>
-        <div class="download-row"><button type="button" id="download-report">↓ Feedback report</button><button type="button" id="download-json">↓ Result JSON</button><a class="download-link" href="/">← Back to studio</a></div>
+        <div class="download-row"><button type="button" id="download-report">↓ Feedback report</button><button type="button" id="download-json">↓ Result JSON</button><button type="button" id="download-csv">↓ All scores CSV</button><button type="button" id="print-reviews">Print shown reviews</button><a class="download-link" href="/">← Back to studio</a></div>
         <details class="transcript"><summary>View original transcript</summary><pre id="review-transcript" dir="auto"></pre></details>
       </section>
     </div>

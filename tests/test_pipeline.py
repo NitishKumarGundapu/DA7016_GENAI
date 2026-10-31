@@ -93,6 +93,55 @@ class FakeLLM:
         return Chain()
 
 
+class FailFirstGradeDraft(FakeLLM):
+    def __init__(self):
+        super().__init__()
+        self.failed = False
+
+    def structured(self, schema, **options):
+        chain = super().structured(schema, **options)
+        if schema is not GradeDraft:
+            return chain
+        owner = self
+
+        class Chain:
+            def invoke(self, messages):
+                result = chain.invoke(messages)
+                if not owner.failed:
+                    owner.failed = True
+                    raise RuntimeError("simulated grading failure")
+                return result
+
+        return Chain()
+
+
+def test_failed_question_is_skipped_and_pipeline_continues(caplog):
+    with tempfile.TemporaryDirectory() as tmp:
+        directory = Path(tmp)
+        answer = directory / "student.txt"
+        answer.write_text("जल जीवन है\nपृथ्वी गोल है", encoding="utf-8")
+        llm = FailFirstGradeDraft()
+        llm.responses[ReportFeedback][0].diagnostic_translations = [
+            "प्रश्न 1: मूल्यांकन विफल, समीक्षा आवश्यक",
+            "प्रश्न 1: खुली समीक्षा टिप्पणियाँ",
+            "मूल्यांकन विफल; अंक रोके गए",
+        ]
+        state = build_graph(llm, Settings(use_critic=True)).invoke(
+            {**reference_inputs(directory), "answer_files": [str(answer)]})
+        assert "Skipping question=1" in caplog.text
+        grades = state["result"]["grades"]
+        assert [g["question_id"] for g in grades] == ["1", "2", "3"]
+        assert grades[0]["attempted"] and not grades[0]["verified"]
+        assert grades[0]["marks_awarded"] == 0
+        assert grades[0]["attempts"] == 0
+        assert grades[1]["attempts"] == 0 and not grades[1]["attempted"]
+        assert grades[2]["verified"] and grades[2]["marks_awarded"] == 1
+        assert state["result"]["total"] == 1
+        assert any("Q1: grading failed and the question was skipped" in w
+                   for w in state["warnings"])
+        assert "मूल्यांकन विफल; अंक रोके गए" in state["report_md"]
+
+
 def test_full_pipeline_and_streaming(caplog):
     for streaming in (False, True):
         with tempfile.TemporaryDirectory() as tmp:
@@ -132,6 +181,9 @@ def test_full_pipeline_and_streaming(caplog):
             grading_calls = [c for c in llm.calls if c[0] is GradeDraft]
             assert [json.loads(c[1][-1].content.split("\n", 1)[1])["question_id"]
                     for c in grading_calls] == ["1", "3"]
+            assert next(c for c in llm.calls if c[0] is ExamSpec)[2]["reasoning"] is False
+            assert next(c for c in llm.calls if c[0] is Segmentation)[2]["reasoning"] is False
+            assert all("reasoning" not in c[2] for c in grading_calls)
             assert "उत्तर नहीं दिया" in state["report_md"]
             assert "Assessment Report" not in state["report_md"]
             report_input = next(c[1][-1].content for c in llm.calls if c[0] is ReportFeedback)
@@ -271,7 +323,11 @@ def test_documents_sent_unchanged_to_openrouter(extension):
         payload = options["json"]
         assert payload["model"] == "mistralai/mistral-small-3.1-24b-instruct"
         assert payload["temperature"] == 0
+        assert payload["reasoning"] == {"enabled": False}
         assert "Preserve the original language" in payload["messages"][0]["content"]
+        assert "Diagrams/graphs/tables/figures" in payload["messages"][0]["content"]
+        assert "axis labels" in payload["messages"][0]["content"]
+        assert "Convert diagrams" in payload["messages"][1]["content"][0]["text"]
         attachment = payload["messages"][1]["content"][1]
         if extension == ".pdf":
             assert attachment["type"] == "file"
@@ -299,7 +355,11 @@ def test_text_read_without_ocr_and_custom_vision_model():
         with patch.dict(os.environ, {"OPENROUTER_API_KEY": "test-key"}), \
                 patch("auto_assessment.ingest.requests.post", return_value=ocr_response("प्रश्न 1")) as post:
             extract_document(str(path), Settings(openrouter_vision_model="custom/vision"))
-        assert post.call_args.kwargs["json"]["model"] == "custom/vision"
+            assert post.call_args.kwargs["json"]["model"] == "custom/vision"
+            assert post.call_args.kwargs["json"]["reasoning"] == {"enabled": False}
+            extract_document(str(path), Settings(
+                openrouter_vision_model="custom/vision", extraction_reasoning=True))
+        assert post.call_args.kwargs["json"]["reasoning"] == {"enabled": True}
 
 
 @pytest.mark.parametrize("body", [
@@ -390,22 +450,41 @@ def test_require_explicit_valid_rubric_marks(case):
         normalize_spec(paper)
 
 
-def test_bad_marks_stop_before_grading_and_bad_alignment_is_not_zero():
-    for invalid_rubric in (True, False):
-        llm = FakeLLM()
-        paper = spec().model_dump()
-        if invalid_rubric:
-            paper["questions"][0]["criteria"][0]["max_marks"] = 1
-        else:
-            llm.responses[Segmentation][0].answers.pop()
-        llm.responses[ExamSpec] = [ExamSpec.model_validate(paper)]
-        with tempfile.TemporaryDirectory() as tmp:
-            answer = Path(tmp) / "student.txt"
-            answer.write_text("जल जीवन है\nपृथ्वी गोल है", encoding="utf-8")
-            with pytest.raises(ValueError):
-                build_graph(llm, Settings(use_critic=False)).invoke(
-                    {**reference_inputs(Path(tmp)), "answer_files": [str(answer)]})
-        assert not any(c[0] is GradeDraft for c in llm.calls)
+def test_bad_marks_stop_before_grading():
+    llm = FakeLLM()
+    paper = spec().model_dump()
+    paper["questions"][0]["criteria"][0]["max_marks"] = 1
+    llm.responses[ExamSpec] = [ExamSpec.model_validate(paper)]
+    with tempfile.TemporaryDirectory() as tmp:
+        answer = Path(tmp) / "student.txt"
+        answer.write_text("जल जीवन है\nपृथ्वी गोल है", encoding="utf-8")
+        with pytest.raises(ValueError, match="criterion marks sum"):
+            build_graph(llm, Settings(use_critic=False)).invoke(
+                {**reference_inputs(Path(tmp)), "answer_files": [str(answer)]})
+    assert not any(c[0] is GradeDraft for c in llm.calls)
+
+
+def test_missing_alignment_is_skipped_and_marked_for_review():
+    llm = FakeLLM()
+    llm.responses[Segmentation][0].answers.pop()
+    llm.responses[ReportFeedback][0].diagnostic_translations = [
+        "प्रश्न 3: संरेखण विफल, समीक्षा आवश्यक",
+        "प्रश्न 3: खुली समीक्षा टिप्पणियाँ",
+        "कोई संरेखित उत्तर नहीं मिला; अंक रोके गए",
+    ]
+    with tempfile.TemporaryDirectory() as tmp:
+        answer = Path(tmp) / "student.txt"
+        answer.write_text("जल जीवन है\nपृथ्वी गोल है", encoding="utf-8")
+        state = build_graph(llm, Settings(use_critic=False)).invoke(
+            {**reference_inputs(Path(tmp)), "answer_files": [str(answer)]})
+    grades = state["result"]["grades"]
+    assert [g["question_id"] for g in grades] == ["1", "2", "3"]
+    assert grades[2]["verified"] is False and grades[2]["marks_awarded"] == 0
+    assert grades[2]["attempted"] is False
+    assert any("Q3: answer alignment failed" in w for w in state["warnings"])
+    assert [json.loads(c[1][-1].content.split("\n", 1)[1])["question_id"]
+            for c in llm.calls if c[0] is GradeDraft] == ["1"]
+    assert "कोई संरेखित उत्तर नहीं मिला; अंक रोके गए" in state["report_md"]
 
 
 def test_unverified_draft_cannot_double_count_or_award_ungrounded_marks():
@@ -423,7 +502,7 @@ def test_structured_grading_model_preserves_temperature():
     llm = object.__new__(LLMClient)
     with patch.object(llm, "chat") as chat:
         llm.structured(ExamSpec, temperature=0)
-    chat.assert_called_once_with(temperature=0)
+    chat.assert_called_once_with(temperature=0, reasoning=None)
     chat.return_value.with_structured_output.assert_called_once_with(ExamSpec)
 
 
@@ -462,16 +541,29 @@ def test_answer_can_span_pages_and_invalid_grading_retries():
         assert "YOUR PREVIOUS ATTEMPT WAS REJECTED" in calls[1]
 
 
-def test_hallucinated_alignment_stops_instead_of_grading():
+def test_hallucinated_alignment_is_skipped_not_graded():
     with tempfile.TemporaryDirectory() as tmp:
         path = Path(tmp) / "student.txt"
         path.write_text("जल जीवन है\nपृथ्वी गोल है", encoding="utf-8")
         llm = FakeLLM()
         llm.responses[Segmentation][0].answers[0].answer_text = "invented answer"
-        with pytest.raises(ValueError, match="not grounded"):
-            build_graph(llm, Settings(use_critic=False)).invoke(
-                {**reference_inputs(Path(tmp)), "answer_files": [str(path)]})
-        assert not any(c[0] is GradeDraft for c in llm.calls)
+        llm.responses[ReportFeedback][0].diagnostic_translations = [
+            "प्रश्न 1: संरेखण विफल, समीक्षा आवश्यक",
+            "प्रश्न 1: खुली समीक्षा टिप्पणियाँ",
+            "उत्तर प्रतिलेख में नहीं मिला; अंक रोके गए",
+        ]
+        state = build_graph(llm, Settings(use_critic=False)).invoke(
+            {**reference_inputs(Path(tmp)), "answer_files": [str(path)]})
+    grades = state["result"]["grades"]
+    assert [g["question_id"] for g in grades] == ["1", "2", "3"]
+    assert grades[0]["attempted"] and not grades[0]["verified"]
+    assert grades[0]["marks_awarded"] == 0
+    assert grades[2]["verified"] and grades[2]["marks_awarded"] == 1
+    grading_prompts = [c[1][-1].content for c in llm.calls if c[0] is GradeDraft]
+    assert grading_prompts
+    assert all('"question_id": "3"' in prompt for prompt in grading_prompts)
+    assert any("Q1: answer alignment failed" in w for w in state["warnings"])
+    assert "उत्तर प्रतिलेख में नहीं मिला; अंक रोके गए" in state["report_md"]
 
 
 def test_uncertain_transcription_is_unverified_and_diagnostics_are_localized():

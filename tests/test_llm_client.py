@@ -48,6 +48,22 @@ def test_provider_selection_and_per_call_temperature(provider, client_type):
         assert client.model.max_retries == 2
 
 
+@pytest.mark.parametrize("provider", ["ollama", "openrouter"])
+def test_reasoning_can_be_disabled_per_call_without_mutating_the_client(provider):
+    with patch.dict("os.environ", {"OPENROUTER_API_KEY": "test-key"}):
+        client = create_llm(Settings(provider=provider))
+    disabled = client.chat(temperature=0, reasoning=False)
+    enabled = client.chat(reasoning=True)
+    if provider == "ollama":
+        assert disabled.reasoning is False and enabled.reasoning is True
+        assert client.model.reasoning is None
+    else:
+        assert disabled.extra_body["reasoning"] == {"enabled": False}
+        assert enabled.extra_body["reasoning"] == {"enabled": True}
+        assert client.model.extra_body is None
+        assert client.model.reasoning is None
+
+
 @pytest.mark.parametrize("client_type,provider", [
     (OllamaClient, "ollama"),
     (OpenRouterClient, "openrouter"),
@@ -59,6 +75,14 @@ def test_explicit_client_has_correct_provider_without_mutating_settings(client_t
         client = client_type(settings)
     assert client.describe()["provider"] == provider
     assert settings.provider == original_provider
+
+
+def test_extraction_reasoning_env_flag_defaults_to_disabled():
+    assert Settings().extraction_reasoning is False
+    with patch.dict("os.environ", {"EXTRACTION_REASONING": "true"}):
+        assert Settings.from_env().extraction_reasoning is True
+    with patch.dict("os.environ", {"EXTRACTION_REASONING": "false"}):
+        assert Settings.from_env().extraction_reasoning is False
 
 
 def test_invalid_provider_rejected():
@@ -75,7 +99,7 @@ def test_invoke_preserves_message_usage_and_propagates_errors():
     with patch.object(client, "chat") as chat:
         chat.return_value.invoke.return_value = message
         assert client.invoke("prompt", temperature=0) is message
-        chat.assert_called_once_with(temperature=0)
+        chat.assert_called_once_with(temperature=0, reasoning=None)
         chat.return_value.invoke.assert_called_once_with("prompt")
         chat.return_value.invoke.side_effect = RuntimeError("Provider unavailable")
         with pytest.raises(RuntimeError, match="Provider unavailable"):

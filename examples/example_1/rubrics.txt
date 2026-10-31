@@ -1,0 +1,7 @@
+Question : 
+
+total marks for the question : 3
+
+    -> leg - 1 mark (height of right angled triangle)
+    -> leg - 1 mark (base of right angled triangle)
+    -> hypotenuse - 1 mark (hypotenuse of right angled triangle)

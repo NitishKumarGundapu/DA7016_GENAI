@@ -19,8 +19,8 @@ START -> ingest -> parse_spec -> clean_align -> grade_question -> aggregate -> r
 |---|---|
 | `ingest` | Reads UTF-8 text directly. Sends each complete PDF as a base64 file to OpenRouter's `file-parser` plugin with `mistral-ocr`; sends original images directly to the OpenRouter vision model. No local PDF parsing, page rendering, resizing, or image conversion. Preserves upload order and requests original page order within each document. |
 | `parse_spec` | Aligns question paper, optional rubric, and model answers into an internal `ExamSpec`. Explicit positive criterion allocations must sum to each question total; questions with no extracted allocations use one whole-question criterion based on the model answer and printed maximum marks, with a report warning. Partial or inconsistent allocations and missing/invalid question totals stop assessment before grading. |
-| `clean_align` | Builds `items`, a list of `{question_id, question, answer, model_answer, rubric, max_marks}` dictionaries. Student answers remain verbatim. Missing/duplicate/unknown mappings and ungrounded text stop assessment, rather than silently becoming zero marks. |
-| `grade_question` | Evaluates questions one by one in paper order, using each aligned dictionary as input. |
+| `clean_align` | Builds `items`, a list of `{question_id, question, answer, model_answer, rubric, max_marks}` dictionaries. Student answers remain verbatim. Missing/duplicate mappings and ungrounded text skip only the affected question with withheld marks and a human-review flag, rather than stopping the whole assessment or silently becoming zero marks; unknown ids are ignored with a warning. |
+| `grade_question` | Evaluates questions one by one in paper order, using each aligned dictionary as input. A question flagged during alignment or whose grading raises is skipped with withheld marks and a review warning; the remaining questions still run. |
 | sub-graph | `grade` (per-criterion marks plus verbatim evidence quote) -> `verify` (code checks, then LLM critic) -> retry up to `MAX_GRADE_RETRIES` with the critique -> `finalize`. Unattempted questions skip the LLM. |
 | `aggregate` | Totals are computed in code, never by the LLM. |
 | `report` | Receives complete evaluations and review flags. Writes question-specific remarks, overall feedback and study priorities. Code renders awarded/maximum/withheld criterion marks, evidence and justifications; the LLM never computes totals. |
@@ -113,6 +113,15 @@ live per-question progress bar. Marks, criterion feedback, warnings, the transcr
 downloads live on the review sheet. After an assessment finishes, **Show reviews** in the sidebar
 opens that review sheet (`/reviews`, above **How it works**) and stays disabled until a run
 completes. **Clear & start new** removes the stored run and resets the studio.
+The review sheet starts with total marks, percentage, attempt counts, human-review counts,
+overall feedback, study priorities and assessment warnings. Search questions, student/model
+answers, rubric criteria and feedback; filter by verification, unattempted answers or withheld
+marks. Default order follows the question paper; optional sorts use natural question numbers,
+human-review priority, withheld marks or score percentage. Jump links open question details,
+with student/reference answers side by side, actionable feedback and criterion evidence.
+Expand/collapse affects shown questions. **Print shown reviews** includes expanded details for
+the current filtered list; **All scores CSV**, Markdown and JSON downloads always include the
+complete result. CSV exports quote text and neutralize spreadsheet formulas.
 The web UI uses Flask with plain HTML, CSS, and vanilla JavaScript; no Node.js, frontend build,
 external fonts, or animation libraries are needed. It includes live streamed progress,
 reorderable student pages and model settings; criterion feedback, review warnings and transcript
@@ -133,8 +142,12 @@ Structured JSON spec input is no longer supported.
 - Set `LANGSMITH_TRACING=true`, `LANGSMITH_API_KEY`, `LANGSMITH_PROJECT`. Every run is traced end to end: node, per-question sub-graph, retries, LLM calls, with tags and metadata (provider, models).
 - Evals: `python evals/run_eval.py` creates a dataset from `evals/dataset.json` and scores marks-in-bounds, total consistency, evidence grounding, verification rate, agreement with human marks, and LLM-judged feedback quality.
 - Offline pipeline checks (no API needed): `python -m pytest tests/test_pipeline.py`
+- Toy upload-to-review pipeline check: `python -m pytest tests/test_web.py -k toy_pipeline`
+- Review sorting/search/export checks (optional Node.js, no packages): `node --test tests/test_reviews.js`
 
 ## Notes
+- Extraction calls (`parse_spec`, `clean_align`, and PDF/image OCR) disable model reasoning by default for faster, cheaper, more literal output. Set `EXTRACTION_REASONING=true` to enable reasoning for those calls; grading, critic verification, and report generation are unaffected.
 - Handwriting accuracy is the main risk. Ollama grading is fully local only with text inputs; PDF/image OCR always uses OpenRouter.
+- Diagrams, graphs and tables in images and scanned PDFs are converted into detailed structured text during OCR and graded from that text. For PDFs, `mistral-ocr` forwards up to 8 extracted images per PDF to the vision model; any beyond that limit may only appear as parsed text. There is still no per-question image crop or visual re-check during grading.
 - All document roles accept text/scanned PDFs, `.txt`, `.md`, or PNG/JPEG/WebP/GIF images. Reference correct answers may also be pasted as text.
 - Ollama context defaults are small, so `OLLAMA_NUM_CTX=8192` is set.

@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import re
 
 from langchain_core.messages import HumanMessage, SystemMessage
@@ -25,6 +26,7 @@ from .models import (
     Segmentation,
 )
 from .verify import (
+    build_failed,
     build_grade,
     build_unattempted,
     check_draft,
@@ -32,6 +34,9 @@ from .verify import (
     norm_qid,
     normalize_spec,
 )
+
+
+logger = logging.getLogger(__name__)
 
 
 def _criteria_text(question: Question) -> str:
@@ -88,8 +93,9 @@ class IngestNode:
 
 
 class ParseSpecNode:
-    def __init__(self, llm: LLMClient):
+    def __init__(self, llm: LLMClient, settings: Settings):
         self.llm = llm
+        self.settings = settings
 
     def __call__(self, state: GraphState) -> dict:
         human = P.PARSE_SPEC_HUMAN.format(
@@ -97,7 +103,9 @@ class ParseSpecNode:
             rubric=state.get("rubric", ""),
             model_answers=state.get("model_answers", ""),
         )
-        spec = self.llm.structured(ExamSpec, temperature=0).invoke(
+        spec = self.llm.structured(
+            ExamSpec, temperature=0, reasoning=self.settings.extraction_reasoning
+        ).invoke(
             [SystemMessage(content=P.PARSE_SPEC_SYSTEM), HumanMessage(content=human)]
         )
         warnings = []
@@ -118,48 +126,82 @@ class ParseSpecNode:
 
 
 class CleanAlignNode:
-    def __init__(self, llm: LLMClient):
+    def __init__(self, llm: LLMClient, settings: Settings):
         self.llm = llm
+        self.settings = settings
 
     def __call__(self, state: GraphState) -> dict:
         spec = ExamSpec.model_validate(state["spec"])
         question_list = "\n".join(f"- id={q.id}: {q.text}" for q in spec.questions)
-        segmentation = self.llm.structured(Segmentation, temperature=0).invoke([
+        segmentation = self.llm.structured(
+            Segmentation, temperature=0, reasoning=self.settings.extraction_reasoning
+        ).invoke([
             SystemMessage(content=P.SEGMENT_SYSTEM),
             HumanMessage(content=f"QUESTIONS:\n{question_list}\n\nTRANSCRIPT:\n{state['transcript']}"),
         ])
         expected = {norm_qid(question.id) for question in spec.questions}
         by_id = {}
+        duplicates: set[str] = set()
+        warnings = []
         for answer in segmentation.answers:
             key = norm_qid(answer.question_id)
-            if key not in expected or key in by_id:
-                raise ValueError(f"Unknown or duplicate segmented question: {answer.question_id}.")
+            if key not in expected:
+                warnings.append(
+                    f"Answer alignment returned an unknown question id {answer.question_id!r}; ignored."
+                )
+                continue
+            if key in by_id:
+                duplicates.add(key)
+                continue
             by_id[key] = answer
-        if set(by_id) != expected:
-            raise ValueError("Answer alignment omitted questions; cannot treat missing mappings as unanswered.")
         answers, items = [], []
         transcript = re.sub(r"(?m)^=== DOCUMENT \d+ ===\n?", "", state["transcript"])
         for question in spec.questions:
-            answer = by_id[norm_qid(question.id)]
-            attempted = bool(answer.answer_text.strip())
-            if answer.attempted != attempted:
-                raise ValueError(f"Q{question.id}: attempted flag contradicts extracted answer text.")
-            if attempted and not evidence_found(answer.answer_text, transcript, threshold=100):
-                raise ValueError(f"Q{question.id}: aligned answer is not grounded in the student transcript.")
-            answers.append({
+            key = norm_qid(question.id)
+            answer = by_id.get(key)
+            attempted = bool(answer.answer_text.strip()) if answer else False
+            visible_answer = answer.answer_text if answer else ""
+            skip_reason = None
+            if answer is None:
+                visible_answer = ""
+                skip_reason = (
+                    f"Q{question.id}: no aligned answer segment was found; "
+                    "marks withheld pending human review."
+                )
+            elif key in duplicates:
+                visible_answer = ""
+                skip_reason = (
+                    f"Q{question.id}: duplicate answer segments were returned; "
+                    "marks withheld pending human review."
+                )
+            elif answer.attempted != attempted:
+                skip_reason = (
+                    f"Q{question.id}: attempted flag contradicts extracted answer text; "
+                    "marks withheld pending human review."
+                )
+            elif attempted and not evidence_found(answer.answer_text, transcript, threshold=100):
+                visible_answer = ""
+                skip_reason = (
+                    f"Q{question.id}: aligned answer is not grounded in the student transcript; "
+                    "marks withheld pending human review."
+                )
+            entry = {
                 "question_id": question.id,
                 "attempted": attempted,
-                "answer_text": answer.answer_text,
-            })
+                "answer_text": answer.answer_text if answer else "",
+            }
+            if skip_reason:
+                entry["skip_reason"] = skip_reason
+            answers.append(entry)
             items.append({
                 "question_id": question.id,
                 "question": question.text,
-                "answer": answer.answer_text,
+                "answer": visible_answer,
                 "model_answer": question.model_answer,
                 "rubric": _criteria_text(question),
                 "max_marks": question.max_marks,
             })
-        return {"answers": answers, "items": items}
+        return {"answers": answers, "items": items, "warnings": warnings}
 
 
 class GradeQuestionsNode:
@@ -171,6 +213,7 @@ class GradeQuestionsNode:
         writer = get_stream_writer()
         total = len(spec.questions)
         grades = []
+        warnings = []
         for index, (question, answer) in enumerate(
             zip(spec.questions, state["answers"]), start=1
         ):
@@ -179,16 +222,52 @@ class GradeQuestionsNode:
                 "total": total,
                 "question_id": question.id,
             })
-            output = self.question_graph.invoke(
-                {"question": question.model_dump(), "answer": answer}, config
-            )
-            grades.append(output["grade"])
+            skip_reason = answer.get("skip_reason")
+            if skip_reason:
+                logger.warning("Skipping question=%s: %s", question.id, skip_reason)
+                grades.append(
+                    build_failed(
+                        question,
+                        skip_reason,
+                        attempted=bool(answer.get("attempted", True)),
+                    ).model_dump()
+                )
+                warnings.append(
+                    f"Q{question.id}: answer alignment failed and the question was "
+                    "skipped; human review required."
+                )
+            else:
+                try:
+                    output = self.question_graph.invoke(
+                        {"question": question.model_dump(), "answer": answer}, config
+                    )
+                    grades.append(output["grade"])
+                except Exception as exc:
+                    reason = f"{type(exc).__name__}: {exc}".strip()
+                    logger.exception(
+                        "Skipping question=%s after grading failure: %s", question.id, reason
+                    )
+                    note = (
+                        f"Automatic grading failed ({reason}); marks withheld pending "
+                        "human review."
+                    )
+                    grades.append(
+                        build_failed(
+                            question,
+                            note,
+                            attempted=bool(answer.get("attempted", True)),
+                        ).model_dump()
+                    )
+                    warnings.append(
+                        f"Q{question.id}: grading failed and the question was skipped; "
+                        "human review required."
+                    )
             writer({
                 "completed": index,
                 "total": total,
                 "question_id": question.id,
             })
-        return {"grades": grades}
+        return {"grades": grades, "warnings": warnings}
 
 
 class AggregateNode:

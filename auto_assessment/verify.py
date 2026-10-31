@@ -131,3 +131,11 @@ def build_unattempted(q: Question) -> QuestionGrade:
             for c in q.criteria
         ],
     )
+
+
+def build_failed(q: Question, note: str, attempted: bool = True) -> QuestionGrade:
+    """Placeholder for a question whose grading failed; marks are withheld for review."""
+    return QuestionGrade(
+        question_id=q.id, max_marks=q.max_marks, marks_awarded=0.0, attempted=attempted,
+        verified=False, verification_notes=[note],
+    )
